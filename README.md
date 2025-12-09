@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 分布式锁系统
 
 用于管理镜像层下载的分布式锁系统，确保同一镜像层在同一时刻只有一个节点能够下载。
@@ -191,3 +192,6 @@ if err := downloadLayer(); err != nil {
 go mod download
 ```
 
+=======
+# distributed-lock
+>>>>>>> 1a9907a493036a0c59d2b7be9a1feb37ae3b4d2a
