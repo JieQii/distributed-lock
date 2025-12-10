@@ -46,41 +46,47 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[客户端发送解锁请求] --> B{解析请求参数}
-    B -->|参数无效| C[返回400错误]
-    B -->|参数有效| D[计算资源Key<br/>Type:ResourceID]
-    D --> E[根据Key哈希获取分段Shard]
-    E --> F[获取分段锁 shard.mu.Lock]
-    F --> G{检查锁是否存在}
+    A["客户端发送解锁请求"]
+    --> B{"解析请求参数"}
     
-    G -->|锁不存在| H[返回403错误<br/>锁不存在]
-    G -->|锁存在| I{检查是否为锁持有者}
-    I -->|不是持有者| J[返回403错误<br/>不是锁的持有者]
-    I -->|是持有者| K[更新锁信息<br/>Completed=true<br/>Success=request.Success]
+    B -->|"参数无效"| C["返回400错误"]
+    B -->|"参数有效"| D["计算资源Key\nType: ResourceID"]
     
-    K --> L{操作是否成功?}
-    L -->|成功| M{操作类型判断}
-    M -->|Pull| N[更新引用计数<br/>Count++<br/>Nodes[nodeID]=true]
-    M -->|Update| O[不改变引用计数]
-    M -->|Delete| P[清理引用计数<br/>delete refCounts]
+    D --> E["根据Key哈希获取分段Shard"]
+    E --> F["获取分段锁 shard.mu.Lock"]
+    F --> G{"检查锁是否存在"}
     
-    L -->|失败| Q[立即释放锁<br/>delete locks[key]]
-    Q --> R[处理队列下一个请求]
-    R --> S{队列是否为空}
-    S -->|不为空| T[分配锁给队列第一个请求<br/>FIFO]
-    S -->|为空| U[完成]
+    G -->|"锁不存在"| H["返回403错误\n锁不存在"]
+    G -->|"锁存在"| I{"检查是否为锁持有者"}
     
-    N --> V[保留锁信息5分钟<br/>用于其他节点查询状态]
+    I -->|"不是持有者"| J["返回403错误\n不是锁的持有者"]
+    I -->|"是持有者"| K["更新锁信息\nCompleted=true\nSuccess=request.Success"]
+    
+    K --> L{"操作是否成功?"}
+    
+    L -->|"成功"| M{"操作类型判断"}
+    M -->|"Pull"| N["更新引用计数\nCount++\nNodes[nodeID]=true"]
+    M -->|"Update"| O["不改变引用计数"]
+    M -->|"Delete"| P["清理引用计数\ndelete refCounts"]
+    
+    L -->|"失败"| Q["立即释放锁\ndelete locks[key]"]
+    Q --> R["处理队列下一个请求"]
+    R --> S{"队列是否为空"}
+    S -->|"不为空"| T["分配锁给队列第一个请求\nFIFO"]
+    S -->|"为空"| U["完成"]
+    
+    N --> V["保留锁信息5分钟\n用于其他节点查询状态"]
     O --> V
     P --> V
-    V --> W[启动goroutine<br/>5分钟后清理锁信息]
+    V --> W["启动goroutine\n5分钟后清理锁信息"]
     W --> U
     
     T --> U
-    H --> X[释放分段锁 shard.mu.Unlock]
+    H --> X["释放分段锁 shard.mu.Unlock"]
     J --> X
     U --> X
-    X --> Y[返回响应给客户端]
+    X --> Y["返回响应给客户端"]
+
 ```
 
 ## 3. 引用计数管理流程
