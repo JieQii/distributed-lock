@@ -93,18 +93,19 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[引用计数操作] --> B{操作类型}
+    A["引用计数操作"]
+    --> B{"操作类型"}
     
-    B -->|Pull成功| C[获取或创建ReferenceCount]
-    C --> D{节点是否已在集合中?}
-    D -->|否| E[Count++<br/>Nodes[nodeID] = true]
-    D -->|是| F[不改变计数<br/>防止重复计数]
+    B -->|"Pull成功"| C["获取或创建ReferenceCount"]
+    C --> D{"节点是否已在集合中?"}
+    D -->|"否"| E["Count++\nNodes[nodeID] = true"]
+    D -->|"是"| F["不改变计数\n防止重复计数"]
     
-    B -->|Update| G[不改变引用计数]
+    B -->|"Update"| G["不改变引用计数"]
     
-    B -->|Delete成功| H[删除引用计数条目<br/>delete refCounts[resourceID]]
+    B -->|"Delete成功"| H["删除引用计数条目\ndelete refCounts[resourceID]"]
     
-    E --> I[更新完成]
+    E --> I["更新完成"]
     F --> I
     G --> I
     H --> I
