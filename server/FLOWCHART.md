@@ -1,5 +1,63 @@
 # 分布式锁系统流程图
 
+## 新版整体流程（含 subtype 队列、回调、HTTP 监控）
+
+```mermaid
+flowchart TD
+    %% 客户端获取锁
+    A[客户端请求分布式锁] --> B[HTTP 请求 /lock]
+    B --> C{服务端参数校验}
+    C -->|无效| C1[400 返回]
+    C -->|有效| D[计算资源Key(Type:ResourceID)\n获取分段Shard]
+    D --> E[加分段锁 shard.mu.Lock]
+    E --> F{资源是否存在}
+    F -->|存在| G[释放分段锁\n对资源加互斥锁/占位\n启动HTTP连接监控]
+    F -->|不存在| H[创建资源对象\n插入全局map\n释放分段锁\n占位锁]
+
+    %% 资源占位后
+    G --> I{是否有当前holder?}
+    H --> I
+    I -->|有且未完成| J[按subtype入对应waiter队列\n返回加入等待]
+    I -->|有且已完成| K{成功/失败}
+    K -->|成功| K1[返回skip=true]
+    K -->|失败| K2[尝试弹出队列并占位]
+    I -->|无holder| L[占位为当前请求\n返回acquired=true]
+
+    %% 客户端侧
+    K1 --> M[客户端收到skip或acquired]
+    K2 --> M
+    L --> M
+    M --> N{acquired?}
+    N -->|否| N1[等待其他节点通知/状态轮询]
+    N -->|是| O[执行业务并调用callback]
+    O --> P{callback是否成功}
+    P -->|成功| Q[解锁请求 /unlock\nSuccess=true\n附带节点信息+错误信息(空)]
+    P -->|失败| R[解锁请求 /unlock\nSuccess=false\n附带节点信息+错误信息]
+
+    %% 释放锁（服务端）
+    Q --> S[服务端收到 /unlock]
+    R --> S
+    S --> T[加分段锁+取资源]
+    T --> U{请求是否holder?}
+    U -->|否| U1[403 无权]
+    U -->|是| V{Success?}
+    V -->|失败| W[释放holder\n从对应subtype队列弹出队头占位\n返回下一请求acquired]
+    V -->|成功| X[通知对应subtype队列队头\n若为空继续其他subtype队列\n若全空则删除资源]
+    W --> Y[返回释放结果]
+    X --> Y
+    U1 --> Y
+
+    %% HTTP监控
+    G --> Z[HTTP连接监控goroutine]
+    Z --> Z1{连接中断?}
+    Z1 -->|是| Z2{是否holder?}
+    Z2 -->|是| Z3[按失败释放逻辑: 清锁+唤醒队列]
+    Z2 -->|否| Z4[从对应subtype队列移除请求]
+    Z1 -->|否| Z5[无操作]
+```
+
+## 1. 加锁流程（TryLock）
+
 ## 1. 加锁流程（TryLock）
 
 ```mermaid
@@ -237,6 +295,54 @@ flowchart TD
     E --> Q
     H --> Q
     I --> Q
+```
+
+## 8. 新版时序图（含 callback 与 HTTP 监控）
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant S as 服务端(lock manager)
+    participant Sh as 分段Shard/资源
+    participant CB as content callback
+
+    C->>S: POST /lock (Type/subtype, ResourceID, NodeID)
+    S->>Sh: 分段定位 + 资源占位/队列入队(按subtype)
+    alt 已有holder且未完成
+        Sh-->>C: 返回等待/skip
+    else holder完成成功
+        Sh-->>C: skip=true
+    else 占位成功
+        Sh-->>C: acquired=true
+    end
+
+    alt acquired=true
+        C->>CB: callback执行业务/计数文件/操作
+        alt callback成功
+            C->>S: POST /unlock (Success=true, NodeID, Err="", subtype)
+        else callback失败
+            C->>S: POST /unlock (Success=false, NodeID, Err!=null, subtype)
+        end
+    end
+
+    S->>Sh: 校验holder & 更新锁状态
+    alt Success=false
+        Sh->>Sh: 释放holder；从对应subtype队列取队头占位
+        Sh-->>Waiter: 返回acquired=true
+    else Success=true
+        Sh->>Sh: 通知对应subtype队列队头；若为空继续其他subtype；若都空清理资源
+    end
+    S-->>C: 返回释放结果
+
+    par HTTP 连接监控
+        S->>S: 监控 /lock 连接
+        S-->>Sh: 连接中断
+        alt 中断者是holder
+            Sh->>Sh: 按失败逻辑释放锁并唤醒队列
+        else 非holder
+            Sh->>Sh: 从对应subtype队列移除该请求
+        end
+    end
 ```
 
 ## 关键点说明

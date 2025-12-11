@@ -1,25 +1,25 @@
 # 仲裁逻辑说明
 
-## 仲裁逻辑概述
+## 仲裁逻辑概述（按 subtype 队列）
 
-所有操作类型（Pull、Delete、Update）的仲裁逻辑都遵循相同的两步检查：
+所有操作类型（Pull、Delete、Update）的仲裁逻辑遵循相同的两步检查，并且**等待队列按 subtype 区分**：
 
 1. **第一步：检查是否有其他节点在操作**
-   - 检查锁是否被占用
-   - 如果锁被占用且操作未完成，加入等待队列
-   - 如果锁被占用且操作已完成，根据结果决定是否跳过
+   - 若资源已有 holder 且未完成：按 *subtype* 加入对应 waiter 队列（不再是全局 FIFO）
+   - 若资源已有 holder 且已完成：根据结果决定是否跳过
+   - 若资源无 holder：占位为当前请求并返回 acquired=true
 
-2. **第二步：检查引用计数是否符合预期**
-   - 在锁不存在时，检查引用计数是否符合预期
-   - 用于判断操作是否已完成但还没刷新mergerfs
-   - 不同操作类型的预期值不同
+2. **第二步：检查引用计数是否符合预期（锁不存在时，用于判断是否跳过）**
+   - Pull：`refcount != 0` → 跳过（已下载完成但未刷新 mergerfs）
+   - Delete：`refcount > 0` → 返回错误；`refcount == 0` → 允许
+   - Update：是否要求 `refcount == 0` 由配置 `UpdateRequiresNoRef` 决定，不用于跳过
 
 ## Pull操作的仲裁逻辑
 
 ### 检查步骤
 
 1. **检查是否有其他节点在下载**
-   - 如果锁存在且操作未完成 → 加入等待队列
+   - 如果锁存在且操作未完成 → 按 subtype 加入对应等待队列
    - 如果锁存在且操作已完成 → 根据结果处理
 
 2. **检查引用计数（预期refcount != 0）**
@@ -47,7 +47,7 @@ case OperationTypePull:
 ### 检查步骤
 
 1. **检查是否有其他节点在删除**
-   - 如果锁存在且操作未完成 → 加入等待队列
+   - 如果锁存在且操作未完成 → 按 subtype 加入对应等待队列
    - 如果锁存在且操作已完成 → 根据结果处理
 
 2. **检查引用计数（预期refcount == 0）**
@@ -77,7 +77,7 @@ case OperationTypeDelete:
 ### 检查步骤
 
 1. **检查是否有其他节点在更新**
-   - 如果锁存在且操作未完成 → 加入等待队列
+   - 如果锁存在且操作未完成 → 按 subtype 加入对应等待队列
    - 如果锁存在且操作已完成 → 根据结果处理
 
 2. **检查引用计数（根据配置决定）**
@@ -92,6 +92,7 @@ case OperationTypeDelete:
 - Update操作不检查refcount来决定是否跳过，因为：
   - update可能用于创建新资源（refcount == 0）
   - update可能用于更新现有资源（refcount > 0）
+- **顺序性**：跨 subtype 不保证全局 FIFO，业务层决定操作顺序；锁仅保证同一资源同一时间只有一个 holder
 
 ### 代码实现
 
@@ -111,6 +112,12 @@ case OperationTypeUpdate:
 - **Pull操作**：如果refcount != 0，说明已经下载完成，应该跳过
 - **Delete操作**：如果refcount == 0，说明可能已经删除完成，但为了安全仍然允许执行delete
 - **Update操作**：不基于refcount来决定是否跳过
+
+## Callback 与节点信息
+
+- 客户端获得锁后会调用 content 插件中的 callback，callback 接收节点信息和错误信息
+- callback 成功/失败都会通过 `/unlock` 上报，附带 Success/错误信息，服务端据此唤醒对应 subtype 队列
+- 删除操作只是“解引用”，需要在解锁前将所有 waiter 的 node 信息带给 callback，业务侧决定最终删除与否
 
 ## 完整流程图
 

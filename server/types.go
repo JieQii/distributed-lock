@@ -18,6 +18,7 @@ type LockRequest struct {
 	ResourceID string    `json:"resource_id"` // 镜像层的digest
 	NodeID     string    `json:"node_id"`
 	Timestamp  time.Time // 请求时间戳，用于FIFO排序
+	Error      string    `json:"error,omitempty"` // 错误信息（用于callback）
 }
 
 // LockInfo 锁信息

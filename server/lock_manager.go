@@ -25,6 +25,10 @@ type resourceShard struct {
 	// 引用计数：resourceID -> ReferenceCount
 	// 记录使用该资源的节点数和节点集合（用于delete操作检查）
 	refCounts map[string]*ReferenceCount
+
+	// 等待通知的通道：nodeID -> chan LockResult
+	// 用于通知等待的节点锁的状态变化
+	waitChannels map[string]chan *LockNotification
 }
 
 // LockManager 锁管理器
