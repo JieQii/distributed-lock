@@ -1,8 +1,5 @@
 module distributed-lock
 
-go 1.21
+go 1.25.5
 
-require (
-	github.com/gorilla/mux v1.8.1
-)
-
+require github.com/gorilla/mux v1.8.1

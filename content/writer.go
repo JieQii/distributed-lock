@@ -3,8 +3,8 @@ package content
 import (
 	"context"
 	"fmt"
-	"io"
 
+	"distributed-lock/callback"
 	"distributed-lock/client"
 )
 
@@ -16,6 +16,9 @@ type Writer struct {
 	nodeID     string // 节点ID
 	locked     bool   // 是否已获得锁
 	skipped    bool   // 是否跳过了操作（操作已完成且成功）
+
+	refCountManager *callback.RefCountManager
+	storage         RefCountStorage
 }
 
 // NewWriter 创建新的Writer
@@ -25,13 +28,17 @@ type Writer struct {
 func NewWriter(serverURL, nodeID, resourceID string) (*Writer, error) {
 	lockClient := client.NewLockClient(serverURL, nodeID)
 
+	storage := NewLocalRefCountStorage()
+
 	return &Writer{
-		client:     lockClient,
-		resourceID: resourceID,
-		lockType:   "image-layer",
-		nodeID:     nodeID,
-		locked:     false,
-		skipped:    false,
+		client:          lockClient,
+		resourceID:      resourceID,
+		lockType:        "image-layer",
+		nodeID:          nodeID,
+		locked:          false,
+		skipped:         false,
+		storage:         storage,
+		refCountManager: callback.NewRefCountManager(storage),
 	}, nil
 }
 
@@ -43,13 +50,24 @@ func OpenWriter(ctx context.Context, serverURL, nodeID, resourceID string) (*Wri
 		return nil, err
 	}
 
+	// 在获取锁之前，先用本地计数判断是否应执行操作
+	skip, errMsg := writer.refCountManager.ShouldSkipOperation(callback.OperationTypePull, writer.resourceID)
+	if skip {
+		writer.skipped = true
+		writer.locked = false
+		return writer, nil
+	}
+	if errMsg != "" {
+		return nil, fmt.Errorf("操作被拒绝: %s", errMsg)
+	}
+
 	// 尝试获取锁
 	request := &client.Request{
 		Type:       writer.lockType,
 		ResourceID: writer.resourceID,
 		NodeID:     writer.nodeID,
 	}
-	
+
 	// 调用加锁接口
 	result, err := client.ClusterLock(ctx, writer.client, request)
 	if err != nil {
@@ -57,17 +75,12 @@ func OpenWriter(ctx context.Context, serverURL, nodeID, resourceID string) (*Wri
 	}
 
 	// 根据结果设置状态
-	if result.Skipped {
-		// 操作已完成且成功，跳过操作
-		writer.skipped = true
-		writer.locked = false
-	} else if result.Acquired {
+	if result.Acquired {
 		// 获得锁，可以开始操作
 		writer.locked = true
 		writer.skipped = false
 	} else {
-		// 不应该到达这里
-		return nil, fmt.Errorf("未知的锁状态")
+		return nil, fmt.Errorf("无法获得锁")
 	}
 
 	return writer, nil
@@ -79,7 +92,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 		// 如果跳过了操作，不需要写入
 		return len(p), nil // 返回成功但不实际写入
 	}
-	
+
 	if !w.locked {
 		return 0, fmt.Errorf("未获得锁，无法写入")
 	}
@@ -94,7 +107,7 @@ func (w *Writer) Commit(ctx context.Context, success bool, err error) error {
 		// 如果跳过了操作，不需要提交
 		return nil
 	}
-	
+
 	if !w.locked {
 		return fmt.Errorf("未获得锁，无法提交")
 	}
@@ -109,6 +122,15 @@ func (w *Writer) Commit(ctx context.Context, success bool, err error) error {
 
 	if err != nil {
 		request.Err = err
+	}
+
+	// 如果操作成功，先更新本地引用计数
+	if success && w.refCountManager != nil {
+		result := &callback.OperationResult{
+			Success: true,
+			NodeID:  w.nodeID,
+		}
+		w.refCountManager.UpdateRefCount(callback.OperationTypePull, w.resourceID, result)
 	}
 
 	// 释放锁
@@ -127,7 +149,7 @@ func (w *Writer) Close(ctx context.Context) error {
 		// 如果跳过了操作，不需要释放锁
 		return nil
 	}
-	
+
 	if !w.locked {
 		return nil // 如果没有锁，直接返回
 	}
@@ -154,4 +176,3 @@ func (w *Writer) Close(ctx context.Context) error {
 // } else {
 //     cw.Commit(ctx, true, nil)   // 操作成功
 // }
-

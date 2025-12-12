@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -39,7 +38,7 @@ func (h *Handler) Lock(w http.ResponseWriter, r *http.Request) {
 
 	response := map[string]interface{}{
 		"acquired": acquired,
-		"skip":     skip,
+		"skip":     skip, // 兼容字段，server不再决定跳过
 	}
 
 	if errMsg != "" {
@@ -118,31 +117,10 @@ func (h *Handler) LockStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// GetRefCount 获取引用计数（用于监控和调试）
-func (h *Handler) GetRefCount(w http.ResponseWriter, r *http.Request) {
-	resourceID := r.URL.Query().Get("resource_id")
-	if resourceID == "" {
-		http.Error(w, "缺少resource_id参数", http.StatusBadRequest)
-		return
-	}
-
-	refCount := h.lockManager.GetRefCount(resourceID)
-
-	response := map[string]interface{}{
-		"resource_id": resourceID,
-		"count":       refCount.Count,
-		"nodes":        refCount.Nodes,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}
-
 // RegisterRoutes 注册路由
 func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/lock", h.Lock).Methods("POST")
 	router.HandleFunc("/unlock", h.Unlock).Methods("POST")
 	router.HandleFunc("/lock/status", h.LockStatus).Methods("GET")
-	router.HandleFunc("/refcount", h.GetRefCount).Methods("GET")
 }
 

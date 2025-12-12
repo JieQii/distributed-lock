@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TestConcurrentPullOperations 测试并发pull操作的引用计数
+// TestConcurrentPullOperations 测试并发pull操作的互斥与队列
 func TestConcurrentPullOperations(t *testing.T) {
 	lm := NewLockManager()
 	resourceID := "sha256:test123"
@@ -30,17 +30,9 @@ func TestConcurrentPullOperations(t *testing.T) {
 				NodeID:     nodeID,
 			}
 
-			acquired, skip, errMsg := lm.TryLock(request)
+			acquired, _, errMsg := lm.TryLock(request)
 			if errMsg != "" {
 				t.Logf("节点 %s 获取锁失败: %s", nodeID, errMsg)
-				return
-			}
-
-			if skip {
-				mu.Lock()
-				skipCount++
-				mu.Unlock()
-				t.Logf("节点 %s 跳过操作（refcount != 0）", nodeID)
 				return
 			}
 
@@ -66,19 +58,15 @@ func TestConcurrentPullOperations(t *testing.T) {
 
 	wg.Wait()
 
-	// 检查引用计数
-	refCount := lm.GetRefCount(resourceID)
-	expectedCount := successCount
-
-	if refCount.Count != expectedCount {
-		t.Errorf("引用计数不正确: 期望 %d, 实际 %d", expectedCount, refCount.Count)
-	} else {
-		t.Logf("引用计数正确: %d 个节点正在使用资源", refCount.Count)
-		t.Logf("成功执行: %d, 跳过操作: %d", successCount, skipCount)
+	if skipCount != 0 {
+		t.Errorf("不应出现跳过操作，实际 %d", skipCount)
+	}
+	if successCount != 1 {
+		t.Errorf("应有且只有1个节点持锁执行，实际 %d", successCount)
 	}
 }
 
-// TestPullSkipWhenRefCountNotZero 测试Pull操作在refcount != 0时跳过
+// TestPullSkipWhenRefCountNotZero 现在期望后续节点排队并获得锁（不依赖引用计数）
 func TestPullSkipWhenRefCountNotZero(t *testing.T) {
 	lm := NewLockManager()
 	resourceID := "sha256:test123"
@@ -103,13 +91,7 @@ func TestPullSkipWhenRefCountNotZero(t *testing.T) {
 	}
 	lm.Unlock(unlockReq1)
 
-	// 检查引用计数
-	refCount := lm.GetRefCount(resourceID)
-	if refCount.Count != 1 {
-		t.Errorf("期望引用计数为1，实际为 %d", refCount.Count)
-	}
-
-	// 节点2尝试pull操作，应该跳过（因为refcount != 0）
+	// 节点2尝试pull操作，应该排队并最终获得锁
 	pullReq2 := &LockRequest{
 		Type:       OperationTypePull,
 		ResourceID: resourceID,
@@ -119,17 +101,15 @@ func TestPullSkipWhenRefCountNotZero(t *testing.T) {
 	if errMsg2 != "" {
 		t.Errorf("不应该有错误: %s", errMsg2)
 	}
-	if acquired2 {
-		t.Error("节点2不应该获得锁，应该跳过操作")
+	if skip2 {
+		t.Error("节点2不应跳过操作")
 	}
-	if !skip2 {
-		t.Error("节点2应该跳过操作（refcount != 0）")
-	} else {
-		t.Log("节点2正确跳过操作（refcount != 0）")
+	if !acquired2 {
+		t.Error("节点2应能获得锁（排队后）")
 	}
 }
 
-// TestDeleteWithReferences 测试有引用时删除操作
+// TestDeleteWithReferences 现在删除不依赖引用计数，期望仍可获取锁
 func TestDeleteWithReferences(t *testing.T) {
 	lm := NewLockManager()
 	resourceID := "sha256:test123"
@@ -154,30 +134,25 @@ func TestDeleteWithReferences(t *testing.T) {
 	}
 	lm.Unlock(unlockReq)
 
-	// 检查引用计数
-	refCount := lm.GetRefCount(resourceID)
-	if refCount.Count != 1 {
-		t.Errorf("期望引用计数为1，实际为 %d", refCount.Count)
-	}
-
-	// 尝试删除（应该失败）
+	// 尝试删除（应能获取锁，由业务侧自行判断）
 	deleteReq := &LockRequest{
 		Type:       OperationTypeDelete,
 		ResourceID: resourceID,
 		NodeID:     "node-2",
 	}
 	acquired, skip, errMsg := lm.TryLock(deleteReq)
-	if acquired || skip {
-		t.Error("期望delete操作失败，但获得了锁")
+	if errMsg != "" {
+		t.Errorf("不应该有错误: %s", errMsg)
 	}
-	if errMsg == "" {
-		t.Error("期望返回错误信息，但没有错误")
-	} else {
-		t.Logf("正确返回错误: %s", errMsg)
+	if !acquired {
+		t.Error("期望delete操作获得锁")
+	}
+	if skip {
+		t.Error("不应跳过操作")
 	}
 }
 
-// TestDeleteWithoutReferences 测试无引用时删除操作
+// TestDeleteWithoutReferences 删除流程，完成后队列应正常推进
 func TestDeleteWithoutReferences(t *testing.T) {
 	lm := NewLockManager()
 	resourceID := "sha256:test123"
@@ -208,11 +183,6 @@ func TestDeleteWithoutReferences(t *testing.T) {
 	}
 	lm.Unlock(unlockReq)
 
-	// 检查引用计数应该被清理
-	refCount := lm.GetRefCount(resourceID)
-	if refCount.Count != 0 {
-		t.Errorf("期望引用计数为0，实际为 %d", refCount.Count)
-	}
 }
 
 // TestDeleteSkipWhenRefCountZero 测试Delete操作在refcount == 0时的情况
@@ -249,10 +219,9 @@ func TestDeleteWhenRefCountZero(t *testing.T) {
 	lm.Unlock(unlockReq)
 }
 
-// TestUpdateWithReferences 测试有引用时update操作（默认允许）
+// TestUpdateWithReferences 现在服务端不关注引用计数，期望正常获得锁
 func TestUpdateWithReferences(t *testing.T) {
 	lm := NewLockManager()
-	lm.UpdateRequiresNoRef = false // 允许热更新
 	resourceID := "sha256:test123"
 
 	// 先执行pull操作，增加引用计数
@@ -292,10 +261,9 @@ func TestUpdateWithReferences(t *testing.T) {
 	}
 }
 
-// TestUpdateWithoutReferencesRequired 测试配置要求无引用时update操作
+// TestUpdateWithoutReferencesRequired 配置已移除，期望正常获得锁
 func TestUpdateWithoutReferencesRequired(t *testing.T) {
 	lm := NewLockManager()
-	lm.UpdateRequiresNoRef = true // 不允许热更新
 	resourceID := "sha256:test123"
 
 	// 先执行pull操作，增加引用计数
@@ -324,13 +292,14 @@ func TestUpdateWithoutReferencesRequired(t *testing.T) {
 		NodeID:     "node-2",
 	}
 	acquired, skip, errMsg := lm.TryLock(updateReq)
-	if acquired || skip {
-		t.Error("期望update操作失败，但获得了锁")
+	if errMsg != "" {
+		t.Errorf("不应该有错误: %s", errMsg)
 	}
-	if errMsg == "" {
-		t.Error("期望返回错误信息，但没有错误")
-	} else {
-		t.Logf("正确返回错误: %s", errMsg)
+	if !acquired {
+		t.Error("期望update操作成功获得锁")
+	}
+	if skip {
+		t.Error("不应该跳过操作")
 	}
 }
 
@@ -465,55 +434,57 @@ func TestConcurrentDifferentResources(t *testing.T) {
 
 	wg.Wait()
 
-	// 不同资源应该可以并发，所以期望所有请求都成功
-	expectedCount := 10
+	// 不同资源应该可以并发，但同一资源只能有一个节点成功
+	// resource1 和 resource2 各应该有1个节点成功，总共2个
+	expectedCount := 2
 	if successCount != expectedCount {
-		t.Errorf("期望 %d 个成功，实际 %d", expectedCount, successCount)
+		t.Errorf("期望 %d 个成功（每个资源1个），实际 %d", expectedCount, successCount)
 	} else {
-		t.Logf("不同资源并发操作成功: %d 个操作", successCount)
+		t.Logf("不同资源并发操作成功: %d 个操作（每个资源1个）", successCount)
 	}
 }
 
 // TestReferenceCountAccuracy 测试引用计数准确性
+// 现在的设计：服务端不再基于引用计数跳过操作，后续节点应正常排队获取锁
 func TestReferenceCountAccuracy(t *testing.T) {
 	lm := NewLockManager()
 	resourceID := "sha256:test123"
 
-	// 执行多个pull操作
-	nodes := []string{"node-1", "node-2", "node-3", "node-4", "node-5"}
-	for _, nodeID := range nodes {
-		req := &LockRequest{
-			Type:       OperationTypePull,
-			ResourceID: resourceID,
-			NodeID:     nodeID,
-		}
-		acquired, _, _ := lm.TryLock(req)
-		if !acquired {
-			t.Fatalf("节点 %s 无法获取锁", nodeID)
-		}
-
-		unlockReq := &UnlockRequest{
-			Type:       OperationTypePull,
-			ResourceID: resourceID,
-			NodeID:     nodeID,
-			Success:    true,
-		}
-		lm.Unlock(unlockReq)
+	// 第一个节点执行pull操作
+	node1 := "node-1"
+	req := &LockRequest{
+		Type:       OperationTypePull,
+		ResourceID: resourceID,
+		NodeID:     node1,
+	}
+	acquired, skip, _ := lm.TryLock(req)
+	if skip {
+		t.Fatal("第一个节点不应该跳过操作")
+	}
+	if !acquired {
+		t.Fatal("第一个节点无法获取锁")
 	}
 
-	// 检查引用计数
-	refCount := lm.GetRefCount(resourceID)
-	if refCount.Count != len(nodes) {
-		t.Errorf("期望引用计数为 %d，实际为 %d", len(nodes), refCount.Count)
+	unlockReq := &UnlockRequest{
+		Type:       OperationTypePull,
+		ResourceID: resourceID,
+		NodeID:     node1,
+		Success:    true,
 	}
+	lm.Unlock(unlockReq)
 
-	// 检查节点集合
-	for _, nodeID := range nodes {
-		if !refCount.Nodes[nodeID] {
-			t.Errorf("期望节点 %s 在引用集合中，但不在", nodeID)
-		}
+	// 后续节点应该可以排队并获得锁
+	node2 := "node-2"
+	req2 := &LockRequest{
+		Type:       OperationTypePull,
+		ResourceID: resourceID,
+		NodeID:     node2,
 	}
-
-	t.Logf("引用计数准确: %d 个节点，节点集合: %v", refCount.Count, refCount.Nodes)
+	acquired2, skip2, _ := lm.TryLock(req2)
+	if skip2 {
+		t.Error("后续节点不应跳过操作")
+	}
+	if !acquired2 {
+		t.Error("后续节点应能获得锁（排队后）")
+	}
 }
-

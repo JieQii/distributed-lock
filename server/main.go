@@ -1,21 +1,19 @@
-package main
+package server
 
 import (
 	"log"
 	"net/http"
 	"os"
 
-	"distributed-lock/server"
-
 	"github.com/gorilla/mux"
 )
 
 func main() {
 	// 创建锁管理器
-	lockManager := server.NewLockManager()
+	lockManager := NewLockManager()
 
 	// 创建HTTP处理器
-	handler := server.NewHandler(lockManager)
+	handler := NewHandler(lockManager)
 
 	// 创建路由
 	router := mux.NewRouter()
@@ -31,4 +29,3 @@ func main() {
 	log.Printf("锁服务端启动在端口 %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, router))
 }
-

@@ -12,14 +12,14 @@ import (
 
 // LockClient 分布式锁客户端
 type LockClient struct {
-	ServerURL string        // 锁服务端地址
+	ServerURL string       // 锁服务端地址
 	Client    *http.Client // HTTP客户端
 	NodeID    string       // 当前节点ID
-	
+
 	// 重试配置
-	MaxRetries      int           // 最大重试次数（默认3次）
-	RetryInterval   time.Duration // 重试间隔（默认1秒）
-	RequestTimeout  time.Duration // 请求超时时间（默认30秒）
+	MaxRetries     int           // 最大重试次数（默认3次）
+	RetryInterval  time.Duration // 重试间隔（默认1秒）
+	RequestTimeout time.Duration // 请求超时时间（默认30秒）
 }
 
 // NewLockClient 创建新的锁客户端
@@ -30,8 +30,8 @@ func NewLockClient(serverURL, nodeID string) *LockClient {
 			Timeout: 30 * time.Second,
 		},
 		NodeID:         nodeID,
-		MaxRetries:      3,
-		RetryInterval:   1 * time.Second,
+		MaxRetries:     3,
+		RetryInterval:  1 * time.Second,
 		RequestTimeout: 30 * time.Second,
 	}
 }
@@ -106,6 +106,12 @@ func (c *LockClient) tryLockOnce(ctx context.Context, request *Request) (*LockRe
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 
+	// 检查 HTTP 状态码，只有在成功时才解析 JSON
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusForbidden {
+		// 返回错误，让上层 Lock 方法的重试机制处理
+		return nil, fmt.Errorf("服务器返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
 	// 解析响应
 	var lockResp LockResponse
 	if err := json.Unmarshal(body, &lockResp); err != nil {
@@ -117,7 +123,7 @@ func (c *LockClient) tryLockOnce(ctx context.Context, request *Request) (*LockRe
 		return &LockResult{
 			Acquired: false,
 			Skipped:  false,
-			Error:    fmt.Errorf(lockResp.Error),
+			Error:    fmt.Errorf("%s", lockResp.Error),
 		}, nil
 	}
 
@@ -177,10 +183,10 @@ func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockRe
 			}
 
 			var statusResp struct {
-				Acquired   bool   `json:"acquired"`
-				Completed  bool   `json:"completed"`  // 操作是否完成
-				Success    bool   `json:"success"`   // 操作是否成功
-				Error      string `json:"error"`     // 错误信息
+				Acquired  bool   `json:"acquired"`
+				Completed bool   `json:"completed"` // 操作是否完成
+				Success   bool   `json:"success"`   // 操作是否成功
+				Error     string `json:"error"`     // 错误信息
 			}
 			if err := json.Unmarshal(body, &statusResp); err != nil {
 				continue
@@ -191,7 +197,7 @@ func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockRe
 				return &LockResult{
 					Acquired: false,
 					Skipped:  false,
-					Error:    fmt.Errorf(statusResp.Error),
+					Error:    fmt.Errorf("%s", statusResp.Error),
 				}, nil
 			}
 
@@ -220,7 +226,7 @@ func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockRe
 							return &LockResult{
 								Acquired: false,
 								Skipped:  false,
-								Error:    fmt.Errorf(lockResp.Error),
+								Error:    fmt.Errorf("%s", lockResp.Error),
 							}, nil
 						}
 						if lockResp.Skip {
@@ -361,4 +367,3 @@ func (c *LockClient) tryUnlockOnce(ctx context.Context, request *Request) error 
 
 	return nil
 }
-

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 )
 
 // ExampleUsage 示例：如何使用content插件下载镜像层
