@@ -1,363 +1,232 @@
-# 分布式锁系统流程图
+# 流程与时序（适配 GitHub 展示，含详细实现）
 
-## 新版整体流程（含 subtype 队列、回调、HTTP 监控）
+> 当前代码：服务器只负责互斥与排队，单一 FIFO 队列/资源键；引用计数与“做/不做”在 Content 插件本地完成。下图中的 “subtype 队列” 为需求描述，可作为扩展位，现实现等效为单 FIFO。
+
+## 1) 加锁流程（/lock）
 
 ```mermaid
 flowchart TD
-    %% 客户端获取锁
-    A[客户端请求分布式锁] --> B[HTTP 请求 /lock]
-    B --> C{服务端参数校验}
-    C -->|无效| C1[400 返回]
-    C -->|有效| D[计算资源Key(Type:ResourceID)\n获取分段Shard]
-    D --> E[加分段锁 shard.mu.Lock]
-    E --> F{资源是否存在}
-    F -->|存在| G[释放分段锁\n对资源加互斥锁/占位\n启动HTTP连接监控]
-    F -->|不存在| H[创建资源对象\n插入全局map\n释放分段锁\n占位锁]
+    A[客户端 /lock 请求<br/>Type, ResourceID, NodeID] --> B[校验参数]
+    B -->|无效| B1[400 返回]
+    B -->|有效| C[计算 key=Type:ResourceID<br/>定位 shard, 加 shard.mu]
+    C --> D{锁是否存在?}
+    D -->|存在且未完成| E[加入等待队列 FIFO<br/>return acquired=false, skip=false]
+    D -->|存在且已完成| F[删除锁, 处理队列]
+    F --> F1{队列有请求?}
+    F1 -->|有| F2[分配队头为新锁<br/>return acquired=true]
+    F1 -->|无| F3[return acquired=false]
+    D -->|不存在| G[创建锁占位<br/>return acquired=true]
+```
 
-    %% 资源占位后
-    G --> I{是否有当前holder?}
-    H --> I
-    I -->|有且未完成| J[按subtype入对应waiter队列\n返回加入等待]
-    I -->|有且已完成| K{成功/失败}
-    K -->|成功| K1[返回skip=true]
-    K -->|失败| K2[尝试弹出队列并占位]
-    I -->|无holder| L[占位为当前请求\n返回acquired=true]
+## 2) 解锁流程（/unlock）
 
+```mermaid
+flowchart TD
+    A[客户端 /unlock<br/>Success, Err(optional)] --> B[校验参数]
+    B -->|无效| B1[400 返回]
+    B -->|有效| C[计算 key=Type:ResourceID<br/>定位 shard, 加 shard.mu]
+    C --> D{锁存在且持有者?}
+    D -->|否| D1[403 返回]
+    D -->|是| E[删除锁，占位释放]
+    E --> F[处理队列: 若有则分配队头为新锁]
+    F --> G[返回 released=true/false]
+```
+
+## 3) 业务/客户端端到端时序（含 callback）
+
+```mermaid
+sequenceDiagram
+    participant Content
+    participant Client
+    participant Server
+    participant Callback as callback(内容侧)
+
+    Content->>Client: Lock(ctx, req)
+    Client->>Server: POST /lock (acquire)
+    Server-->>Client: {acquired | queued | error}
+    alt acquired
+        Content->>Callback: ShouldSkipOperation/业务判断
+        alt 需要执行
+            Content->>Content: 执行业务操作
+            Content->>Callback: UpdateRefCount/业务后处理
+            Content->>Client: Unlock(ctx, success=true, err=nil)
+        else 跳过/失败
+            Content->>Client: Unlock(ctx, success=false, err=原因)
+        end
+        Client->>Server: POST /unlock (Success flag + Err)
+        Server-->>Client: released
+    else queued
+        Client-->>Content: 等待/轮询（如需）
+    else error
+        Client-->>Content: 错误返回
+    end
+```
+
+## 4) 连接监控（扩展位，当前可选）
+
+```mermaid
+flowchart TD
+    A[服务器监控持锁请求连接] --> B{连接中断?}
+    B -->|否| C[无操作]
+    B -->|是| D{是否持有锁?}
+    D -->|是| E[按失败路径释放锁: delete lock -> 处理队列]
+    D -->|否| F[从等待队列移除该请求]
+```
+
+## 5) 说明
+
+- 队列：当前实现为单 FIFO/资源键；若未来按 subtype 拆队列，可在“处理队列”处按 subtype 顺序挑选队头。  
+- skip 字段：保留兼容，服务器始终返回 false；业务侧自行决定“做/不做”。  
+- 引用计数：服务器不维护，内容侧通过 `callback` + 本地存储完成判断与更新。  
+- 失败重试：客户端可在 /lock 层重试；若持锁连接异常，监控逻辑可触发失败释放并推进队列。  
+
+---
+
+## 6) 扩展版加锁（含 subtype 队列占位说明）
+
+> 现实现为单 FIFO；下图给出按 subtype 拆队列的扩展位设计。
+
+```mermaid
+flowchart TD
+    A[请求 /lock] --> B[校验参数]
+    B -->|无效| X[400]
+    B -->|有效| C[计算 key, 定位 shard, 加 shard.mu]
+    C --> D{锁存在?}
+    D -->|存在且未完成| E[按 subtype 放入对应等待队列]
+    D -->|存在且已完成| F[删除锁, 依次扫描 subtype 队列分配队头]
+    F --> F1{找到队头?}
+    F1 -->|是| F2[分配锁, 返回 acquired=true]
+    F1 -->|否| F3[返回 acquired=false]
+    D -->|不存在| G[创建锁占位, 返回 acquired=true]
+```
+
+## 7) 引用计数管理流程（业务侧，Content + callback）
+
+> 放在内容插件本地执行，服务器不参与。
+
+```mermaid
+flowchart TD
+    A[业务决定执行某操作] --> B[callback.ShouldSkipOperation]
+    B -->|skip=true| B1[直接跳过, 不请求锁]
+    B -->|需要执行| C[请求分布式锁]
+    C -->|acquired| D[执行业务]
+    D --> E[callback.UpdateRefCount]
+    E --> F[调用 /unlock]
+    C -->|未获取| C1[等待/重试或返回]
+```
+
+## 8) 客户端重试机制（Lock）
+
+```mermaid
+flowchart TD
+    A[Lock 调用] --> B[attempt=0..MaxRetries]
+    B --> C[发送 /lock, 带超时]
+    C --> D{响应}
+    D -->|acquired/queued| E[返回结果]
+    D -->|非重试类错误| F[返回错误]
+    D -->|超时/网络错误| G{已达最大重试?}
+    G -->|否| H[等待 RetryInterval]
+    H --> B
+    G -->|是| F
+```
+
+## 9) 分段锁并发处理
+
+```mermaid
+flowchart TD
+    A[多个请求] --> B[计算 key]
+    B --> C[FNV-1a 哈希]
+    C --> D[keyHash % shardCount]
+    D --> E{分段}
+    E -->|不同分段| F[并发处理]
+    E -->|同一分段| G[串行 + 队列]
+```
+
+## 10) 完整操作流程（Pull 示例，含 callback）
+
+```mermaid
+sequenceDiagram
+    participant Content
+    participant Callback
+    participant Client
+    participant Server
+
+    Content->>Callback: ShouldSkipOperation(pull)
+    alt skip
+        Callback-->>Content: skip=true
+        Content-->>Content: 不请求锁，直接返回
+    else need
+        Content->>Client: Lock()
+        Client->>Server: POST /lock
+        Server-->>Client: acquired / queued / error
+        alt acquired
+            Content->>Content: 下载/写入
+            Content->>Callback: UpdateRefCount(+1)
+            Content->>Client: Unlock(success=true)
+        else queued
+            Client-->>Content: 可轮询/等待
+        else error
+            Client-->>Content: 返回错误
+        end
+        Client->>Server: POST /unlock (Success flag)
+        Server-->>Client: released
+    end
+```
+
+## 11) HTTP 监控（详细）
+
+```mermaid
+flowchart TD
+    A[监控 goroutine 绑定持锁请求] --> B{HTTP 连接中断?}
+    B -->|否| Z[继续监控]
+    B -->|是| C{该请求是否 holder?}
+    C -->|是| D[按失败路径释放: delete lock -> processQueue]
+    C -->|否| E[从等待队列移除该请求]
+    D --> F[如有队头则分配锁并返回 acquired=true]
+    E --> F
+```
+
+## 12) 端到端总流程（客户端请求 → 服务器处理 → 资源管理 → 释放）
+
+```mermaid
+flowchart TD
     %% 客户端侧
-    K1 --> M[客户端收到skip或acquired]
-    K2 --> M
-    L --> M
-    M --> N{acquired?}
-    N -->|否| N1[等待其他节点通知/状态轮询]
-    N -->|是| O[执行业务并调用callback]
-    O --> P{callback是否成功}
-    P -->|成功| Q[解锁请求 /unlock\nSuccess=true\n附带节点信息+错误信息(空)]
-    P -->|失败| R[解锁请求 /unlock\nSuccess=false\n附带节点信息+错误信息]
+    A[Content 判断是否需要执行\ncallback.ShouldSkipOperation] -->|skip| A1[跳过业务\n不请求锁]
+    A -->|需要执行| B[Client 发起 POST /lock (可带重试/超时)]
+    B --> C{服务器校验参数}
+    C -->|无效| C1[400 返回\n客户端处理错误]
+    C -->|有效| D[计算 key=Type:ResourceID\n定位 shard, 加 shard.mu]
 
-    %% 释放锁（服务端）
-    Q --> S[服务端收到 /unlock]
-    R --> S
-    S --> T[加分段锁+取资源]
-    T --> U{请求是否holder?}
-    U -->|否| U1[403 无权]
-    U -->|是| V{Success?}
-    V -->|失败| W[释放holder\n从对应subtype队列弹出队头占位\n返回下一请求acquired]
-    V -->|成功| X[通知对应subtype队列队头\n若为空继续其他subtype队列\n若全空则删除资源]
-    W --> Y[返回释放结果]
-    X --> Y
-    U1 --> Y
+    %% 服务器 TryLock
+    D --> E{锁是否存在?}
+    E -->|存在且未完成| F[加入等待队列(FIFO/subtype 扩展位)\nreturn acquired=false]
+    E -->|存在且已完成| G[删除锁, 扫描队列分配队头\n若无队头则返回 acquired=false]
+    E -->|不存在| H[占位为当前锁\n返回 acquired=true]
 
-    %% HTTP监控
-    G --> Z[HTTP连接监控goroutine]
-    Z --> Z1{连接中断?}
-    Z1 -->|是| Z2{是否holder?}
-    Z2 -->|是| Z3[按失败释放逻辑: 清锁+唤醒队列]
-    Z2 -->|否| Z4[从对应subtype队列移除请求]
-    Z1 -->|否| Z5[无操作]
+    %% 客户端侧处理返回
+    F --> I[可轮询/等待或直接返回未获取]
+    G --> J[收到 acquired 或未获取]
+    H --> K[收到 acquired=true]
+
+    %% 业务执行 + callback
+    K --> L[执行业务操作]
+    L --> M[callback.UpdateRefCount/业务后处理]
+    L --> N[POST /unlock (Success/Err)]
+    J -->|未获取| I
+
+    %% Unlock 服务器侧
+    N --> O[计算 key, 定位 shard, 加 shard.mu]
+    O --> P{锁存在且持有者?}
+    P -->|否| P1[403 返回]
+    P -->|是| Q[删除锁，处理队列]
+    Q --> R{队列有请求?}
+    R -->|有| S[分配队头为新锁\n返回 acquired=true 给排队请求]
+    R -->|无| T[锁清理完成]
+
+    %% 连接监控（并行）
+    K -.-> U[监控 goroutine 绑定持锁连接]
+    U --> V{连接中断?}
+    V -->|是且 holder| W[按失败路径: delete lock -> processQueue]
+    V -->|是且非 holder| X[从等待队列移除请求]
+    V -->|否| Y[继续监控]
 ```
-
-## 1. 加锁流程（TryLock）
-
-## 1. 加锁流程（TryLock）
-
-```mermaid
-flowchart TD
-    A[客户端发送加锁请求] --> B{解析请求参数}
-    B -->|参数无效| C[返回400错误]
-    B -->|参数有效| D[计算资源Key<br/>Type:ResourceID]
-    D --> E[根据Key哈希获取分段Shard]
-    E --> F[获取分段锁 shard.mu.Lock]
-    F --> G{操作类型判断}
-    
-    G -->|Delete操作| H{检查引用计数}
-    H -->|引用计数 > 0| I[返回错误<br/>无法删除: 有节点正在使用]
-    H -->|引用计数 = 0| J{检查是否已有锁}
-    
-    G -->|Update操作| K{配置检查<br/>UpdateRequiresNoRef?}
-    K -->|true 且引用计数 > 0| L[返回错误<br/>无法更新: 有节点正在使用]
-    K -->|false 或引用计数 = 0| J
-    
-    G -->|Pull操作| J
-    
-    J -->|锁已存在| M{锁状态检查}
-    M -->|已完成且成功| N[返回 skip=true<br/>跳过操作]
-    M -->|已完成但失败| O[删除锁<br/>处理队列下一个请求]
-    O --> P{队列是否为空}
-    P -->|不为空| Q[分配锁给队列第一个请求]
-    Q --> R[返回 acquired=true]
-    P -->|为空| S[返回 acquired=false]
-    M -->|未完成| T[加入等待队列FIFO]
-    T --> S
-    
-    J -->|锁不存在| U[创建锁信息<br/>LockInfo]
-    U --> R
-    
-    R --> V[释放分段锁 shard.mu.Unlock]
-    S --> V
-    I --> V
-    L --> V
-    N --> V
-    V --> W[返回响应给客户端]
-```
-
-## 2. 解锁流程（Unlock）
-
-```mermaid
-flowchart TD
-    A["客户端发送解锁请求"]
-    --> B{"解析请求参数"}
-    
-    B -->|"参数无效"| C["返回400错误"]
-    B -->|"参数有效"| D["计算资源Key\nType: ResourceID"]
-    
-    D --> E["根据Key哈希获取分段Shard"]
-    E --> F["获取分段锁 shard.mu.Lock"]
-    F --> G{"检查锁是否存在"}
-    
-    G -->|"锁不存在"| H["返回403错误\n锁不存在"]
-    G -->|"锁存在"| I{"检查是否为锁持有者"}
-    
-    I -->|"不是持有者"| J["返回403错误\n不是锁的持有者"]
-    I -->|"是持有者"| K["更新锁信息\nCompleted=true\nSuccess=request.Success"]
-    
-    K --> L{"操作是否成功?"}
-    
-    L -->|"成功"| M{"操作类型判断"}
-    M -->|"Pull"| N["更新引用计数\nCount++\nNodes[nodeID]=true"]
-    M -->|"Update"| O["不改变引用计数"]
-    M -->|"Delete"| P["清理引用计数\ndelete refCounts"]
-    
-    L -->|"失败"| Q["立即释放锁\ndelete locks[key]"]
-    Q --> R["处理队列下一个请求"]
-    R --> S{"队列是否为空"}
-    S -->|"不为空"| T["分配锁给队列第一个请求\nFIFO"]
-    S -->|"为空"| U["完成"]
-    
-    N --> V["保留锁信息5分钟\n用于其他节点查询状态"]
-    O --> V
-    P --> V
-    V --> W["启动goroutine\n5分钟后清理锁信息"]
-    W --> U
-    
-    T --> U
-    H --> X["释放分段锁 shard.mu.Unlock"]
-    J --> X
-    U --> X
-    X --> Y["返回响应给客户端"]
-
-```
-
-## 3. 引用计数管理流程
-
-```mermaid
-flowchart TD
-    A["引用计数操作"]
-    --> B{"操作类型"}
-    
-    B -->|"Pull成功"| C["获取或创建ReferenceCount"]
-    C --> D{"节点是否已在集合中?"}
-    D -->|"否"| E["Count++\nNodes[nodeID] = true"]
-    D -->|"是"| F["不改变计数\n防止重复计数"]
-    
-    B -->|"Update"| G["不改变引用计数"]
-    
-    B -->|"Delete成功"| H["删除引用计数条目\ndelete refCounts[resourceID]"]
-    
-    E --> I["更新完成"]
-    F --> I
-    G --> I
-    H --> I
-```
-
-## 4. 客户端重试机制流程
-
-```mermaid
-flowchart TD
-    A[客户端发起请求] --> B[设置请求超时<br/>RequestTimeout]
-    B --> C[序列化请求数据]
-    C --> D[创建HTTP请求<br/>带Context超时]
-    D --> E[发送HTTP请求]
-    
-    E --> F{请求结果}
-    F -->|成功| G[解析响应]
-    F -->|超时| H{是否达到最大重试次数?}
-    F -->|连接失败| H
-    F -->|网络错误| H
-    
-    H -->|未达到| I[等待RetryInterval]
-    I --> J[重试计数+1]
-    J --> C
-    
-    H -->|已达到| K[返回错误<br/>已重试N次]
-    
-    G --> L{响应状态}
-    L -->|有错误信息| M[返回LockResult<br/>Error != nil]
-    L -->|skip=true| N[返回LockResult<br/>Skipped=true]
-    L -->|acquired=true| O[返回LockResult<br/>Acquired=true]
-    L -->|acquired=false| P[进入等待轮询]
-    
-    P --> Q[每500ms查询锁状态]
-    Q --> R{状态检查}
-    R -->|已完成且成功| S[返回Skipped=true]
-    R -->|已完成但失败| T[重新尝试获取锁]
-    R -->|获得锁| O
-    R -->|继续等待| Q
-    
-    T --> E
-```
-
-## 5. 分段锁并发处理流程
-
-```mermaid
-flowchart TD
-    A[多个并发请求] --> B[计算资源Key]
-    B --> C[FNV-1a哈希算法]
-    C --> D[取模获取分段索引<br/>hash % shardCount]
-    
-    D --> E{分段分布}
-    E -->|不同分段| F[并发执行<br/>不同分段独立锁]
-    E -->|相同分段| G[串行执行<br/>同一分段共享锁]
-    
-    F --> H[分段1: 处理请求1]
-    F --> I[分段2: 处理请求2]
-    F --> J[分段N: 处理请求N]
-    
-    G --> K[请求1获取锁]
-    K --> L[请求2进入队列]
-    L --> M[请求3进入队列]
-    M --> N[请求1完成]
-    N --> O[请求2获得锁<br/>FIFO]
-    
-    H --> P[完成]
-    I --> P
-    J --> P
-    O --> P
-```
-
-## 6. 完整操作流程（Pull示例）
-
-```mermaid
-sequenceDiagram
-    participant C as 客户端
-    participant LM as 锁管理器
-    participant S as 分段Shard
-    participant RC as 引用计数
-    
-    C->>LM: POST /lock (Type=pull)
-    LM->>S: 计算分段并获取锁
-    S->>S: shard.mu.Lock()
-    S->>S: 检查是否已有锁
-    alt 锁不存在
-        S->>S: 创建LockInfo
-        S-->>LM: acquired=true
-    else 锁已存在且完成
-        S-->>LM: skip=true
-    else 锁已存在且未完成
-        S->>S: 加入FIFO队列
-        S-->>LM: acquired=false
-    end
-    S->>S: shard.mu.Unlock()
-    LM-->>C: 返回响应
-    
-    alt 获得锁
-        C->>C: 执行pull操作
-        C->>LM: POST /unlock (Success=true)
-        LM->>S: 获取分段锁
-        S->>S: 验证锁持有者
-        S->>RC: 更新引用计数
-        RC->>RC: Count++<br/>Nodes[nodeID]=true
-        S->>S: 标记锁为已完成
-        S->>S: shard.mu.Unlock()
-        LM-->>C: 解锁成功
-    end
-```
-
-## 7. Delete操作特殊检查流程
-
-```mermaid
-flowchart TD
-    A[Delete操作请求] --> B[获取分段锁]
-    B --> C[获取引用计数]
-    C --> D{引用计数检查}
-    
-    D -->|Count > 0| E[返回错误<br/>无法删除: 有节点正在使用]
-    D -->|Count = 0| F{检查是否已有锁}
-    
-    F -->|锁已存在| G{锁状态}
-    G -->|已完成| H[处理队列或跳过]
-    G -->|未完成| I[加入等待队列]
-    
-    F -->|锁不存在| J[创建锁信息]
-    J --> K[返回acquired=true]
-    
-    K --> L[执行delete操作]
-    L --> M{操作结果}
-    M -->|成功| N[清理引用计数<br/>delete refCounts]
-    M -->|失败| O[释放锁<br/>处理队列]
-    
-    N --> P[标记锁为已完成]
-    O --> P
-    P --> Q[完成]
-    
-    E --> Q
-    H --> Q
-    I --> Q
-```
-
-## 8. 新版时序图（含 callback 与 HTTP 监控）
-
-```mermaid
-sequenceDiagram
-    participant C as 客户端
-    participant S as 服务端(lock manager)
-    participant Sh as 分段Shard/资源
-    participant CB as content callback
-
-    C->>S: POST /lock (Type/subtype, ResourceID, NodeID)
-    S->>Sh: 分段定位 + 资源占位/队列入队(按subtype)
-    alt 已有holder且未完成
-        Sh-->>C: 返回等待/skip
-    else holder完成成功
-        Sh-->>C: skip=true
-    else 占位成功
-        Sh-->>C: acquired=true
-    end
-
-    alt acquired=true
-        C->>CB: callback执行业务/计数文件/操作
-        alt callback成功
-            C->>S: POST /unlock (Success=true, NodeID, Err="", subtype)
-        else callback失败
-            C->>S: POST /unlock (Success=false, NodeID, Err!=null, subtype)
-        end
-    end
-
-    S->>Sh: 校验holder & 更新锁状态
-    alt Success=false
-        Sh->>Sh: 释放holder；从对应subtype队列取队头占位
-        Sh-->>Waiter: 返回acquired=true
-    else Success=true
-        Sh->>Sh: 通知对应subtype队列队头；若为空继续其他subtype；若都空清理资源
-    end
-    S-->>C: 返回释放结果
-
-    par HTTP 连接监控
-        S->>S: 监控 /lock 连接
-        S-->>Sh: 连接中断
-        alt 中断者是holder
-            Sh->>Sh: 按失败逻辑释放锁并唤醒队列
-        else 非holder
-            Sh->>Sh: 从对应subtype队列移除该请求
-        end
-    end
-```
-
-## 关键点说明
-
-1. **分段锁机制**：通过哈希将资源分配到不同分段，提升并发度
-2. **FIFO队列**：确保请求按顺序获得锁
-3. **引用计数检查**：delete操作必须引用计数为0，update操作可配置
-4. **重试机制**：客户端自动重试网络错误和超时
-5. **原子性保证**：所有检查和更新都在分段锁保护下进行
-6. **状态管理**：锁的状态（未完成/已完成/成功/失败）用于决定后续请求的处理
-
