@@ -1,0 +1,21 @@
+current_node = "NODEA"
+
+# 可选：socket 路径（若未设置则自动生成）
+socket_path = "/home/hzy/test-content/run/conch-a.sock"
+
+[nodes.NODEA]
+root        = "/home/hzy/test-content/nodeA"
+ip          = "192.168.1.10"
+lock_server = "http://127.0.0.1:8080"
+
+[nodes.NODEB]
+root        = "/home/hzy/test-content/nodeB"
+ip          = "192.168.1.11"
+lock_server = "http://127.0.0.1:8080"
+
+[nodes.NODEC]
+root        = "/home/hzy/test-content/nodeC"
+ip          = "192.168.1.12"
+lock_server = "http://127.0.0.1:8080"
+
+
