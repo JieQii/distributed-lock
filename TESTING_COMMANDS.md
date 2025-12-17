@@ -248,6 +248,7 @@ curl -X POST http://127.0.0.1:8080/lock \
 curl -X POST http://127.0.0.1:8080/unlock \
   -H "Content-Type: application/json" \
   -d '{
+    "type": "pull",
     "resource_id": "sha256:test123",
     "node_id": "NODEA",
     "success": true
@@ -257,6 +258,7 @@ curl -X POST http://127.0.0.1:8080/unlock \
 curl -X POST http://127.0.0.1:8080/unlock \
   -H "Content-Type: application/json" \
   -d '{
+    "type": "pull",
     "resource_id": "sha256:test123",
     "node_id": "NODEA",
     "success": false,
@@ -328,6 +330,7 @@ curl -X POST http://127.0.0.1:8080/lock \
 curl -X POST http://127.0.0.1:8080/unlock \
   -H "Content-Type: application/json" \
   -d '{
+    "type": "pull",
     "resource_id": "sha256:delete-test",
     "node_id": "NODEA",
     "success": true

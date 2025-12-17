@@ -39,6 +39,7 @@ echo "[测试 3] 节点 A 释放锁（成功）..."
 RESPONSE3=$(curl -s -X POST "$SERVER_URL/unlock" \
   -H "Content-Type: application/json" \
   -d "{
+    \"type\": \"pull\",
     \"resource_id\": \"$RESOURCE_ID\",
     \"node_id\": \"NODEA\",
     \"success\": true
@@ -63,6 +64,7 @@ echo "[测试 5] 节点 B 释放锁..."
 RESPONSE5=$(curl -s -X POST "$SERVER_URL/unlock" \
   -H "Content-Type: application/json" \
   -d "{
+    \"type\": \"pull\",
     \"resource_id\": \"$RESOURCE_ID\",
     \"node_id\": \"NODEB\",
     \"success\": true

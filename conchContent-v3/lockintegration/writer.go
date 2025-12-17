@@ -78,11 +78,31 @@ func OpenWriter(ctx context.Context, serverURL, nodeID, resourceID string) (*Wri
 	}
 
 	// 根据结果设置状态
+	if result.Skipped {
+		// 操作已完成且成功，跳过操作（其他节点已经完成）
+		writer.skipped = true
+		writer.locked = false
+		// 更新本地引用计数：其他节点已完成操作，当前节点也应该增加引用计数
+		// 注意：这里使用当前节点ID，表示当前节点"使用"了这个资源
+		if writer.refCountManager != nil {
+			operationResult := &lockcallback.OperationResult{
+				Success: true,
+				NodeID:  writer.nodeID,
+			}
+			writer.refCountManager.UpdateRefCount(lockcallback.OperationTypePull, writer.resourceID, operationResult)
+		}
+		return writer, nil
+	}
+
 	if result.Acquired {
 		// 获得锁，可以开始操作
 		writer.locked = true
 		writer.skipped = false
 	} else {
+		// 没有获得锁，也没有跳过（可能是错误情况）
+		if result.Error != nil {
+			return nil, fmt.Errorf("获取锁失败: %w", result.Error)
+		}
 		return nil, fmt.Errorf("无法获得锁")
 	}
 
@@ -167,5 +187,3 @@ func (w *Writer) Close(ctx context.Context) error {
 	// 默认认为操作失败（如果没有调用Commit）
 	return w.Commit(ctx, false, fmt.Errorf("Writer关闭时未调用Commit"))
 }
-
-

@@ -76,7 +76,18 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 			// 继续处理队列中的下一个请求
 			lm.processQueue(shard, key)
 		} else {
-			// 锁被占用但操作未完成，加入等待队列
+			// 锁被占用但操作未完成
+			// 如果当前请求的节点就是锁的持有者（可能是队列中的旧请求被分配了锁，现在客户端重新请求）
+			if lockInfo.Request.NodeID == request.NodeID {
+				// 注意：这里允许同一节点获取锁，但实际使用中，客户端应该在请求锁之前
+				// 先检查引用计数（ShouldSkipOperation），如果资源已存在，不应该请求锁
+				// 这个逻辑主要用于处理队列场景：队列中的旧请求被分配锁后，客户端通过轮询重新请求
+				// 更新锁的请求信息（使用最新的请求）
+				lockInfo.Request = request
+				lockInfo.AcquiredAt = time.Now()
+				return true, false, ""
+			}
+			// 其他节点持有锁，加入等待队列
 			lm.addToQueue(shard, key, request)
 			return false, false, ""
 		}

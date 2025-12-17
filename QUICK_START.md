@@ -33,7 +33,7 @@ curl -X POST http://127.0.0.1:8080/lock \
 # 释放锁
 curl -X POST http://127.0.0.1:8080/unlock \
   -H "Content-Type: application/json" \
-  -d '{"resource_id":"sha256:test","node_id":"NODEA","success":true}'
+  -d '{"type":"pull","resource_id":"sha256:test","node_id":"NODEA","success":true}'
 ```
 
 ### 4. 查看日志
