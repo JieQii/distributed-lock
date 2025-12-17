@@ -318,6 +318,11 @@ func (c *LockClient) Unlock(ctx context.Context, request *Request) error {
 
 // tryUnlockOnce 尝试释放锁（单次尝试）
 func (c *LockClient) tryUnlockOnce(ctx context.Context, request *Request) error {
+	// 将 Err 转换为 Error 字符串（如果存在）
+	if request.Err != nil && request.Error == "" {
+		request.Error = request.Err.Error()
+	}
+
 	// 序列化请求
 	jsonData, err := json.Marshal(request)
 	if err != nil {

@@ -12,11 +12,12 @@ const (
 // Request 锁请求结构
 // Type + ResourceID 作为仲裁Key作为唯一标识
 type Request struct {
-	Type       string // 仲裁类型：pull, update, delete
-	ResourceID string // 仲裁目标资源的唯一标识（镜像层的digest）
-	NodeID     string // 发起仲裁的节点唯一标识
-	Err        error  // 错误信息（用于解锁时传递）
-	Success    bool   // 操作是否成功（用于解锁时传递）
+	Type       string `json:"type"`            // 仲裁类型：pull, update, delete
+	ResourceID string `json:"resource_id"`     // 仲裁目标资源的唯一标识（镜像层的digest）
+	NodeID     string `json:"node_id"`         // 发起仲裁的节点唯一标识
+	Err        error  `json:"-"`               // 错误信息（用于内部传递，不序列化）
+	Error      string `json:"error,omitempty"` // 错误信息（用于解锁时传递，序列化为字符串）
+	Success    bool   `json:"success"`         // 操作是否成功（用于解锁时传递）
 }
 
 // LockResponse 加锁响应
@@ -35,9 +36,9 @@ type UnlockResponse struct {
 
 // LockResult 加锁结果
 type LockResult struct {
-	Acquired bool   // 是否获得锁
-	Skipped  bool   // 是否跳过操作（操作已完成且成功）
-	Error    error  // 错误信息
+	Acquired bool  // 是否获得锁
+	Skipped  bool  // 是否跳过操作（操作已完成且成功）
+	Error    error // 错误信息
 }
 
 // ClusterLock 获取分布式锁
@@ -54,4 +55,3 @@ func ClusterLock(ctx context.Context, client *LockClient, request *Request) (*Lo
 func ClusterUnLock(ctx context.Context, client *LockClient, request *Request) error {
 	return client.Unlock(ctx, request)
 }
-
