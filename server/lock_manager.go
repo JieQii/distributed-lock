@@ -70,11 +70,18 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 
 	// 第一步：检查是否已经有锁（是否有其他节点在操作）
 	if lockInfo, exists := shard.locks[key]; exists {
-		// 如果操作已完成，释放锁并继续处理队列
+		// 如果操作已完成
 		if lockInfo.Completed {
-			delete(shard.locks, key)
-			// 继续处理队列中的下一个请求
-			lm.processQueue(shard, key)
+			if lockInfo.Success {
+				// 操作已完成且成功：清理锁，返回 skip=true，让客户端跳过操作
+				// 不分配锁给队列中的节点，让它们通过轮询发现操作已完成
+				delete(shard.locks, key)
+				return false, true, "" // acquired=false, skip=true
+			} else {
+				// 操作已完成但失败：清理锁并分配锁给队列中的下一个节点，让它继续尝试
+				delete(shard.locks, key)
+				lm.processQueue(shard, key)
+			}
 		} else {
 			// 锁被占用但操作未完成
 			// 如果当前请求的节点就是锁的持有者（可能是队列中的旧请求被分配了锁，现在客户端重新请求）
@@ -128,9 +135,16 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 	lockInfo.Success = request.Success
 	lockInfo.CompletedAt = time.Now()
 
-	// 释放锁并处理队列
-	delete(shard.locks, key)
-	lm.processQueue(shard, key)
+	if request.Success {
+		// 操作成功：保留锁信息（标记为已完成），让队列中的节点通过轮询发现操作已完成
+		// 不立即删除锁，也不分配锁给队列中的节点
+		// 队列中的节点通过轮询 /lock/status 会发现 completed=true && success=true，从而跳过操作
+		// 锁会在 TryLock 中被清理（当发现操作已完成时）
+	} else {
+		// 操作失败：删除锁并分配锁给队列中的下一个节点，让它继续尝试
+		delete(shard.locks, key)
+		lm.processQueue(shard, key)
+	}
 
 	return true
 }
