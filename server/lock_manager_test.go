@@ -444,6 +444,125 @@ func TestConcurrentDifferentResources(t *testing.T) {
 	}
 }
 
+// TestNodeConcurrentDifferentResources 测试：节点B在等待队列中时，能够并发下载其他资源
+// 场景：
+// 1. 节点A和节点B同时请求某个镜像层（layer1）
+// 2. 节点A获得锁，节点B加入等待队列
+// 3. 节点B再收到其他资源的请求（layer2）
+// 4. 节点B应该能够并发下载layer2（即使layer1还在等待）
+func TestNodeConcurrentDifferentResources(t *testing.T) {
+	lm := NewLockManager()
+	layer1 := "sha256:layer1"
+	layer2 := "sha256:layer2"
+	nodeA := "NODEA"
+	nodeB := "NODEB"
+
+	// 步骤1: 节点A请求layer1并获取锁
+	reqA1 := &LockRequest{
+		Type:       OperationTypePull,
+		ResourceID: layer1,
+		NodeID:     nodeA,
+	}
+	acquiredA1, _, _ := lm.TryLock(reqA1)
+	if !acquiredA1 {
+		t.Fatal("节点A应该获得layer1的锁")
+	}
+	t.Logf("✅ 节点A获得layer1的锁")
+
+	// 步骤2: 节点B请求layer1，应该加入等待队列
+	reqB1 := &LockRequest{
+		Type:       OperationTypePull,
+		ResourceID: layer1,
+		NodeID:     nodeB,
+	}
+	acquiredB1, _, _ := lm.TryLock(reqB1)
+	if acquiredB1 {
+		t.Error("节点B不应该立即获得layer1的锁，应该加入等待队列")
+	}
+	t.Logf("✅ 节点B加入layer1的等待队列")
+
+	// 验证节点B在队列中
+	queueLen := lm.GetQueueLength(OperationTypePull, layer1)
+	if queueLen != 1 {
+		t.Errorf("期望队列长度为1，实际为 %d", queueLen)
+	}
+	t.Logf("✅ layer1的队列长度为1（节点B在队列中）")
+
+	// 步骤3: 节点B请求layer2，应该能够立即获得锁（不同资源，可以并发）
+	reqB2 := &LockRequest{
+		Type:       OperationTypePull,
+		ResourceID: layer2,
+		NodeID:     nodeB,
+	}
+	acquiredB2, _, _ := lm.TryLock(reqB2)
+	if !acquiredB2 {
+		t.Error("节点B应该能够获得layer2的锁（不同资源，可以并发）")
+	}
+	t.Logf("✅ 节点B获得layer2的锁（即使layer1还在等待队列中）")
+
+	// 验证节点B同时持有layer2的锁，但layer1还在等待队列中
+	lockInfoB2 := lm.GetLockInfo(OperationTypePull, layer2)
+	if lockInfoB2 == nil || lockInfoB2.Request.NodeID != nodeB {
+		t.Error("节点B应该持有layer2的锁")
+	}
+
+	queueLenAfter := lm.GetQueueLength(OperationTypePull, layer1)
+	if queueLenAfter != 1 {
+		t.Errorf("节点B获得layer2的锁后，layer1的队列长度应该仍为1，实际为 %d", queueLenAfter)
+	}
+	t.Logf("✅ 节点B持有layer2的锁，layer1的队列长度仍为1")
+
+	// 步骤4: 节点B完成layer2的操作，释放锁
+	unlockB2 := &UnlockRequest{
+		Type:       OperationTypePull,
+		ResourceID: layer2,
+		NodeID:     nodeB,
+		Success:    true,
+	}
+	releasedB2 := lm.Unlock(unlockB2)
+	if !releasedB2 {
+		t.Error("节点B应该能够释放layer2的锁")
+	}
+	t.Logf("✅ 节点B释放layer2的锁")
+
+	// 验证layer1的队列状态不变
+	queueLenFinal := lm.GetQueueLength(OperationTypePull, layer1)
+	if queueLenFinal != 1 {
+		t.Errorf("节点B释放layer2的锁后，layer1的队列长度应该仍为1，实际为 %d", queueLenFinal)
+	}
+
+	// 步骤5: 节点A完成layer1的操作，释放锁
+	unlockA1 := &UnlockRequest{
+		Type:       OperationTypePull,
+		ResourceID: layer1,
+		NodeID:     nodeA,
+		Success:    false, // 操作失败，锁应该转交给队列中的节点B
+	}
+	releasedA1 := lm.Unlock(unlockA1)
+	if !releasedA1 {
+		t.Error("节点A应该能够释放layer1的锁")
+	}
+	t.Logf("✅ 节点A释放layer1的锁（操作失败）")
+
+	// 验证节点B现在持有layer1的锁（从队列中分配）
+	lockInfoB1 := lm.GetLockInfo(OperationTypePull, layer1)
+	if lockInfoB1 == nil {
+		t.Error("节点B应该持有layer1的锁（从队列中分配）")
+	} else if lockInfoB1.Request.NodeID != nodeB {
+		t.Errorf("期望节点B持有layer1的锁，实际为 %s", lockInfoB1.Request.NodeID)
+	}
+	t.Logf("✅ 节点B从队列中获得layer1的锁")
+
+	// 验证队列已清空
+	queueLenAfterUnlock := lm.GetQueueLength(OperationTypePull, layer1)
+	if queueLenAfterUnlock != 0 {
+		t.Errorf("节点A释放锁后，layer1的队列应该为空，实际长度为 %d", queueLenAfterUnlock)
+	}
+	t.Logf("✅ layer1的队列已清空")
+
+	t.Logf("✅ 测试通过：节点B在等待layer1时，能够并发下载layer2")
+}
+
 // TestReferenceCountAccuracy 测试引用计数准确性
 // 现在的设计：服务端不再基于引用计数跳过操作，后续节点应正常排队获取锁
 func TestReferenceCountAccuracy(t *testing.T) {

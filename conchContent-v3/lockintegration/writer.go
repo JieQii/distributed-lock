@@ -114,6 +114,11 @@ func (w *Writer) Skipped() bool {
 	return w.skipped
 }
 
+// Locked 是否已获得锁
+func (w *Writer) Locked() bool {
+	return w.locked
+}
+
 // Write 写入数据（示例，占位用，真实逻辑由调用方实现）
 func (w *Writer) Write(p []byte) (n int, err error) {
 	if w.skipped {

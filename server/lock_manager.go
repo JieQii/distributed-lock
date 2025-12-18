@@ -2,6 +2,7 @@ package server
 
 import (
 	"hash/fnv"
+	"log"
 	"sync"
 	"time"
 )
@@ -75,10 +76,13 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 			if lockInfo.Success {
 				// 操作已完成且成功：清理锁，返回 skip=true，让客户端跳过操作
 				// 不分配锁给队列中的节点，让它们通过轮询发现操作已完成
+				log.Printf("[TryLock] ⏭️  操作已完成且成功: key=%s, node=%s, 返回skip=true",
+					key, request.NodeID)
 				delete(shard.locks, key)
 				return false, true, "" // acquired=false, skip=true
 			} else {
 				// 操作已完成但失败：清理锁并分配锁给队列中的下一个节点，让它继续尝试
+				log.Printf("[TryLock] ❌ 操作已完成但失败: key=%s, 处理队列", key)
 				delete(shard.locks, key)
 				lm.processQueue(shard, key)
 			}
@@ -90,17 +94,22 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 				// 先检查引用计数（ShouldSkipOperation），如果资源已存在，不应该请求锁
 				// 这个逻辑主要用于处理队列场景：队列中的旧请求被分配锁后，客户端通过轮询重新请求
 				// 更新锁的请求信息（使用最新的请求）
+				log.Printf("[TryLock] 🔄 同一节点重新请求: key=%s, node=%s, 更新锁信息",
+					key, request.NodeID)
 				lockInfo.Request = request
 				lockInfo.AcquiredAt = time.Now()
 				return true, false, ""
 			}
 			// 其他节点持有锁，加入等待队列
+			log.Printf("[TryLock] ⏳ 加入等待队列: key=%s, node=%s, 当前持有者=%s",
+				key, request.NodeID, lockInfo.Request.NodeID)
 			lm.addToQueue(shard, key, request)
 			return false, false, ""
 		}
 	}
 
 	// 没有锁，直接获取锁
+	log.Printf("[TryLock] ✅ 直接获取锁成功: key=%s, node=%s", key, request.NodeID)
 	shard.locks[key] = &LockInfo{
 		Request:    request,
 		AcquiredAt: time.Now(),
@@ -140,8 +149,11 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 		// 不立即删除锁，也不分配锁给队列中的节点
 		// 队列中的节点通过轮询 /lock/status 会发现 completed=true && success=true，从而跳过操作
 		// 锁会在 TryLock 中被清理（当发现操作已完成时）
+		log.Printf("[Unlock] ✅ 操作成功，保留锁信息: key=%s, node=%s, 等待队列中的节点通过轮询发现",
+			key, request.NodeID)
 	} else {
 		// 操作失败：删除锁并分配锁给队列中的下一个节点，让它继续尝试
+		log.Printf("[Unlock] ❌ 操作失败，唤醒队列: key=%s, node=%s", key, request.NodeID)
 		delete(shard.locks, key)
 		lm.processQueue(shard, key)
 	}
@@ -190,6 +202,9 @@ func (lm *LockManager) processQueue(shard *resourceShard, key string) {
 	// FIFO：取出队列中的第一个请求
 	nextRequest := queue[0]
 	shard.queues[key] = queue[1:]
+
+	log.Printf("[processQueue] 🔄 从队列分配锁: key=%s, node=%s, 剩余队列长度=%d",
+		key, nextRequest.NodeID, len(shard.queues[key]))
 
 	// 如果队列为空，删除队列
 	if len(shard.queues[key]) == 0 {
