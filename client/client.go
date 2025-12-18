@@ -164,7 +164,7 @@ func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockRe
 				continue
 			}
 
-			req, err := http.NewRequestWithContext(ctx, "GET", c.ServerURL+"/lock/status", bytes.NewBuffer(jsonData))
+			req, err := http.NewRequestWithContext(ctx, "POST", c.ServerURL+"/lock/status", bytes.NewBuffer(jsonData))
 			if err != nil {
 				continue
 			}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -108,8 +107,18 @@ func unlock(nodeID, layerID string, success bool) error {
 
 // queryStatus 查询锁状态
 func queryStatus(nodeID, layerID string) (*StatusResponse, error) {
-	url := fmt.Sprintf("%s/lock/status?type=pull&resource_id=%s&node_id=%s", serverURL, layerID, nodeID)
-	resp, err := http.Get(url)
+	req := LockRequest{
+		Type:       "pull",
+		ResourceID: layerID,
+		NodeID:     nodeID,
+	}
+
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.Post(serverURL+"/lock/status", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, err
 	}
@@ -120,9 +129,14 @@ func queryStatus(nodeID, layerID string) (*StatusResponse, error) {
 		return nil, err
 	}
 
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("服务器返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
 	var statusResp StatusResponse
 	if err := json.Unmarshal(body, &statusResp); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析响应失败: %v, 响应内容: %s", err, string(body))
 	}
 
 	return &statusResp, nil
@@ -192,6 +206,33 @@ func processLayer(nodeID, layerID string, layerDuration time.Duration, wg *sync.
 				return
 			}
 
+			// 如果操作已完成但失败，再次尝试获取锁
+			if status.Completed && !status.Success {
+				log.Printf("[%s] 🔄 层 %s 操作失败，再次尝试获取锁", nodeID, layerID)
+				lockResp, err := requestLock(nodeID, layerID)
+				if err != nil {
+					log.Printf("[%s] ⚠️  再次请求层 %s 的锁失败: %v", nodeID, layerID, err)
+					continue
+				}
+				if lockResp.Acquired {
+					log.Printf("[%s] ✅ 再次获得层 %s 的锁，开始下载", nodeID, layerID)
+					if err := downloadLayer(nodeID, layerID, layerDuration); err != nil {
+						log.Printf("[%s] ❌ 层 %s 下载失败: %v", nodeID, layerID, err)
+						unlock(nodeID, layerID, false)
+						return
+					}
+					log.Printf("[%s] 🔓 释放层 %s 的锁（成功）", nodeID, layerID)
+					unlock(nodeID, layerID, true)
+					return
+				}
+				if lockResp.Skip {
+					log.Printf("[%s] ⏭️  层 %s 已由其他节点完成，跳过下载", nodeID, layerID)
+					return
+				}
+				// 继续轮询
+				continue
+			}
+
 			// 如果获得锁，开始下载
 			if status.Acquired {
 				log.Printf("[%s] ✅ 从队列中获得层 %s 的锁，开始下载", nodeID, layerID)
@@ -224,15 +265,16 @@ func main() {
 	log.Println("✅ 服务器运行正常")
 	log.Println("")
 
-	// 四个镜像层
+	// 四个镜像层（使用时间戳确保每次测试使用唯一的ID）
+	timestamp := time.Now().Unix()
 	layers := []struct {
 		ID       string
 		Duration time.Duration
 	}{
-		{"sha256:layer1", 3 * time.Second},
-		{"sha256:layer2", 2 * time.Second},
-		{"sha256:layer3", 4 * time.Second},
-		{"sha256:layer4", 2 * time.Second},
+		{fmt.Sprintf("sha256:layer1-%d", timestamp), 3 * time.Second},
+		{fmt.Sprintf("sha256:layer2-%d", timestamp), 2 * time.Second},
+		{fmt.Sprintf("sha256:layer3-%d", timestamp), 4 * time.Second},
+		{fmt.Sprintf("sha256:layer4-%d", timestamp), 2 * time.Second},
 	}
 
 	log.Println("📦 镜像层列表:")
@@ -277,4 +319,3 @@ func main() {
 	log.Println("✅ 所有下载任务完成")
 	log.Println("==========================================")
 }
-

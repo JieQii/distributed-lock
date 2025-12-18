@@ -146,5 +146,5 @@ func (h *Handler) LockStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/lock", h.Lock).Methods("POST")
 	router.HandleFunc("/unlock", h.Unlock).Methods("POST")
-	router.HandleFunc("/lock/status", h.LockStatus).Methods("GET")
+	router.HandleFunc("/lock/status", h.LockStatus).Methods("POST")
 }
