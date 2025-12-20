@@ -22,6 +22,9 @@ type resourceShard struct {
 
 	// 等待队列：resourceID -> []*LockRequest (FIFO队列)
 	queues map[string][]*LockRequest
+
+	// 订阅者：resourceID -> []Subscriber
+	subscribers map[string][]Subscriber
 }
 
 // LockManager 锁管理器
@@ -44,8 +47,9 @@ func NewLockManager() *LockManager {
 	// 初始化所有分段
 	for i := 0; i < shardCount; i++ {
 		lm.shards[i] = &resourceShard{
-			locks:  make(map[string]*LockInfo),
-			queues: make(map[string][]*LockRequest),
+			locks:       make(map[string]*LockInfo),
+			queues:      make(map[string][]*LockRequest),
+			subscribers: make(map[string][]Subscriber),
 		}
 	}
 	return lm
@@ -76,13 +80,13 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 			if lockInfo.Success {
 				// 操作已完成且成功：清理锁，返回 skip=true，让客户端跳过操作
 				// 不分配锁给队列中的节点，让它们通过轮询发现操作已完成
-				log.Printf("[TryLock] ⏭️  操作已完成且成功: key=%s, node=%s, 返回skip=true",
+				log.Printf("[TryLock] 操作已完成且成功: key=%s, node=%s, 返回skip=true",
 					key, request.NodeID)
 				delete(shard.locks, key)
 				return false, true, "" // acquired=false, skip=true
 			} else {
 				// 操作已完成但失败：清理锁并分配锁给队列中的下一个节点，让它继续尝试
-				log.Printf("[TryLock] ❌ 操作已完成但失败: key=%s, 处理队列", key)
+				log.Printf("[TryLock] 操作已完成但失败: key=%s, 处理队列", key)
 				delete(shard.locks, key)
 				lm.processQueue(shard, key)
 			}
@@ -94,14 +98,14 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 				// 先检查引用计数（ShouldSkipOperation），如果资源已存在，不应该请求锁
 				// 这个逻辑主要用于处理队列场景：队列中的旧请求被分配锁后，客户端通过轮询重新请求
 				// 更新锁的请求信息（使用最新的请求）
-				log.Printf("[TryLock] 🔄 同一节点重新请求: key=%s, node=%s, 更新锁信息",
+				log.Printf("[TryLock] 同一节点重新请求: key=%s, node=%s, 更新锁信息",
 					key, request.NodeID)
 				lockInfo.Request = request
 				lockInfo.AcquiredAt = time.Now()
 				return true, false, ""
 			}
 			// 其他节点持有锁，加入等待队列
-			log.Printf("[TryLock] ⏳ 加入等待队列: key=%s, node=%s, 当前持有者=%s",
+			log.Printf("[TryLock] 加入等待队列: key=%s, node=%s, 当前持有者=%s",
 				key, request.NodeID, lockInfo.Request.NodeID)
 			lm.addToQueue(shard, key, request)
 			return false, false, ""
@@ -109,7 +113,7 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 	}
 
 	// 没有锁，直接获取锁
-	log.Printf("[TryLock] ✅ 直接获取锁成功: key=%s, node=%s", key, request.NodeID)
+	log.Printf("[TryLock] 直接获取锁成功: key=%s, node=%s", key, request.NodeID)
 	shard.locks[key] = &LockInfo{
 		Request:    request,
 		AcquiredAt: time.Now(),
@@ -149,13 +153,33 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 		// 不立即删除锁，也不分配锁给队列中的节点
 		// 队列中的节点通过轮询 /lock/status 会发现 completed=true && success=true，从而跳过操作
 		// 锁会在 TryLock 中被清理（当发现操作已完成时）
-		log.Printf("[Unlock] ✅ 操作成功，保留锁信息: key=%s, node=%s, 等待队列中的节点通过轮询发现",
+		log.Printf("[Unlock] 操作成功，保留锁信息: key=%s, node=%s, 等待队列中的节点通过轮询发现",
 			key, request.NodeID)
+
+		// 触发订阅消息广播
+		lm.broadcastEvent(shard, key, &OperationEvent{
+			Type:        request.Type,
+			ResourceID:  request.ResourceID,
+			NodeID:      request.NodeID,
+			Success:     true,
+			Error:       request.Error,
+			CompletedAt: lockInfo.CompletedAt,
+		})
 	} else {
 		// 操作失败：删除锁并分配锁给队列中的下一个节点，让它继续尝试
-		log.Printf("[Unlock] ❌ 操作失败，唤醒队列: key=%s, node=%s", key, request.NodeID)
+		log.Printf("[Unlock] 操作失败，唤醒队列: key=%s, node=%s", key, request.NodeID)
 		delete(shard.locks, key)
 		lm.processQueue(shard, key)
+
+		// 触发订阅消息广播（操作失败）
+		lm.broadcastEvent(shard, key, &OperationEvent{
+			Type:        request.Type,
+			ResourceID:  request.ResourceID,
+			NodeID:      request.NodeID,
+			Success:     false,
+			Error:       request.Error,
+			CompletedAt: lockInfo.CompletedAt,
+		})
 	}
 
 	return true
@@ -203,7 +227,7 @@ func (lm *LockManager) processQueue(shard *resourceShard, key string) {
 	nextRequest := queue[0]
 	shard.queues[key] = queue[1:]
 
-	log.Printf("[processQueue] 🔄 从队列分配锁: key=%s, node=%s, 剩余队列长度=%d",
+	log.Printf("[processQueue] 从队列分配锁: key=%s, node=%s, 剩余队列长度=%d",
 		key, nextRequest.NodeID, len(shard.queues[key]))
 
 	// 如果队列为空，删除队列
@@ -244,6 +268,85 @@ func (lm *LockManager) GetLockInfo(lockType, resourceID string) *LockInfo {
 	defer shard.mu.RUnlock()
 
 	return shard.locks[key]
+}
+
+// Subscribe 订阅资源操作完成事件
+// 返回订阅者ID（用于取消订阅）
+func (lm *LockManager) Subscribe(lockType, resourceID string, subscriber Subscriber) string {
+	key := LockKey(lockType, resourceID)
+	shard := lm.getShard(key)
+
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if _, exists := shard.subscribers[key]; !exists {
+		shard.subscribers[key] = make([]Subscriber, 0)
+	}
+
+	shard.subscribers[key] = append(shard.subscribers[key], subscriber)
+	log.Printf("[Subscribe] 添加订阅者: key=%s, 当前订阅者数量=%d", key, len(shard.subscribers[key]))
+
+	// 返回订阅者ID（使用内存地址作为唯一标识）
+	return ""
+}
+
+// Unsubscribe 取消订阅
+func (lm *LockManager) Unsubscribe(lockType, resourceID string, subscriber Subscriber) {
+	key := LockKey(lockType, resourceID)
+	shard := lm.getShard(key)
+
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	subscribers, exists := shard.subscribers[key]
+	if !exists {
+		return
+	}
+
+	// 从订阅者列表中移除
+	for i, sub := range subscribers {
+		if sub == subscriber {
+			shard.subscribers[key] = append(subscribers[:i], subscribers[i+1:]...)
+			log.Printf("[Unsubscribe] 移除订阅者: key=%s, 剩余订阅者数量=%d", key, len(shard.subscribers[key]))
+
+			// 如果列表为空，删除该key
+			if len(shard.subscribers[key]) == 0 {
+				delete(shard.subscribers, key)
+			}
+			return
+		}
+	}
+}
+
+// broadcastEvent 广播事件给所有订阅者
+// 注意：调用此函数时，shard.mu 必须已经加锁
+func (lm *LockManager) broadcastEvent(shard *resourceShard, key string, event *OperationEvent) {
+	subscribers, exists := shard.subscribers[key]
+	if !exists || len(subscribers) == 0 {
+		return
+	}
+
+	log.Printf("[BroadcastEvent] 广播事件: key=%s, 订阅者数量=%d, success=%v",
+		key, len(subscribers), event.Success)
+
+	// 清理无效的订阅者
+	validSubscribers := make([]Subscriber, 0, len(subscribers))
+
+	for _, sub := range subscribers {
+		if err := sub.SendEvent(event); err != nil {
+			log.Printf("[BroadcastEvent] 发送事件失败，移除订阅者: key=%s, error=%v", key, err)
+			sub.Close()
+		} else {
+			validSubscribers = append(validSubscribers, sub)
+		}
+	}
+
+	// 更新订阅者列表
+	if len(validSubscribers) == 0 {
+		delete(shard.subscribers, key)
+	} else {
+		shard.subscribers[key] = validSubscribers
+	}
 }
 
 // 引用计数相关逻辑已移至 content 插件侧的 callback 使用中

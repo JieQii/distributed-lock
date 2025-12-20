@@ -45,3 +45,21 @@ type UnlockRequest struct {
 func LockKey(lockType, resourceID string) string {
 	return lockType + ":" + resourceID
 }
+
+// OperationEvent 操作完成事件
+type OperationEvent struct {
+	Type        string    `json:"type"`         // 操作类型：pull, update, delete
+	ResourceID  string    `json:"resource_id"`  // 资源ID
+	NodeID      string    `json:"node_id"`      // 执行操作的节点ID
+	Success     bool      `json:"success"`      // 操作是否成功
+	Error       string    `json:"error"`        // 错误信息（如果有）
+	CompletedAt time.Time `json:"completed_at"` // 完成时间
+}
+
+// Subscriber 订阅者接口
+type Subscriber interface {
+	// SendEvent 发送事件给订阅者
+	SendEvent(event *OperationEvent) error
+	// Close 关闭订阅者连接
+	Close()
+}
