@@ -145,10 +145,11 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 
 	// 更新锁信息
 	lockInfo.Completed = true
-	lockInfo.Success = request.Success
+	// Success 根据 Error 自动推断：没有 error 就是 success
+	lockInfo.Success = (request.Error == "")
 	lockInfo.CompletedAt = time.Now()
 
-	if request.Success {
+	if lockInfo.Success {
 		// 操作成功：保留锁信息（标记为已完成），让队列中的节点通过轮询发现操作已完成
 		// 不立即删除锁，也不分配锁给队列中的节点
 		// 队列中的节点通过轮询 /lock/status 会发现 completed=true && success=true，从而跳过操作

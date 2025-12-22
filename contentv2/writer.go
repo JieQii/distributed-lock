@@ -31,8 +31,16 @@ func (dw *distributedWriter) Close() error {
 		closeErr = dw.writer.Close()
 	}
 	// unlock in Close()
+	// 注意：如果 Commit() 没有被调用，dw.err 可能是空字符串
+	// 这种情况下应该标记为失败（操作被取消）
 	if dw.lockClient != nil && dw.request != nil {
-		dw.request.Error = dw.err
+		if dw.err == "" {
+			// Commit() 没有被调用，可能是异常关闭，标记为失败
+			dw.request.Error = "writer closed without commit"
+		} else {
+			dw.request.Error = dw.err
+		}
+		// Success 会在客户端自动根据 Error 推断（Error != "" → Success = false）
 		fmt.Printf("解锁 resourceID=%q, nodeID=%q\n", dw.request.ResourceID, dw.request.NodeID)
 		_ = client.ClusterUnLock(context.Background(), dw.lockClient, dw.request)
 	}

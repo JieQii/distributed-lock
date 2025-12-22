@@ -34,8 +34,8 @@ type UnlockRequest struct {
 	Type       string `json:"type"` // 操作类型：pull, update, delete
 	ResourceID string `json:"resource_id"`
 	NodeID     string `json:"node_id"`
-	Success    bool   `json:"success"` // 操作是否成功
-	Error      string `json:"error"`   // 错误信息
+	Error      string `json:"error,omitempty"` // 错误信息（如果为空，表示操作成功）
+	// Success 字段已移除，改为根据 Error 自动推断：Error == "" → Success = true
 }
 
 // 注意：ReferenceCount 类型已迁移到 callback 包

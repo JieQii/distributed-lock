@@ -117,11 +117,14 @@ func (w *Writer) Commit(ctx context.Context, success bool, err error) error {
 		Type:       w.lockType,
 		ResourceID: w.resourceID,
 		NodeID:     w.nodeID,
-		Success:    success,
 	}
 
+	// 根据 success 和 err 设置 Error 字段
+	// 服务端会根据 Error 自动推断 Success：Error == "" → Success = true
 	if err != nil {
-		request.Err = err
+		request.Error = err.Error()
+	} else {
+		request.Error = "" // 空字符串表示操作成功
 	}
 
 	// 如果操作成功，先更新本地引用计数

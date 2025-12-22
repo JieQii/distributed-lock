@@ -85,8 +85,10 @@ func (h *Handler) Unlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 释放锁
-	log.Printf("[Unlock] 收到解锁请求: type=%s, resource_id=%s, node_id=%s, success=%v",
-		request.Type, request.ResourceID, request.NodeID, request.Success)
+	// Success 根据 Error 自动推断：没有 error 就是 success
+	success := (request.Error == "")
+	log.Printf("[Unlock] 收到解锁请求: type=%s, resource_id=%s, node_id=%s, success=%v, error=%s",
+		request.Type, request.ResourceID, request.NodeID, success, request.Error)
 
 	released := h.lockManager.Unlock(&request)
 
@@ -97,7 +99,7 @@ func (h *Handler) Unlock(w http.ResponseWriter, r *http.Request) {
 	if released {
 		response["message"] = "成功释放锁"
 		log.Printf("[Unlock] 成功释放锁: resource_id=%s, node_id=%s, success=%v",
-			request.ResourceID, request.NodeID, request.Success)
+			request.ResourceID, request.NodeID, success)
 	} else {
 		response["message"] = "释放锁失败：锁不存在或不是锁的持有者"
 		log.Printf("[Unlock] 释放锁失败: resource_id=%s, node_id=%s",

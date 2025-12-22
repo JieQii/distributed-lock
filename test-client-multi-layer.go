@@ -56,15 +56,14 @@ func processLayer(ctx context.Context, lockClient *client.LockClient, nodeID, la
 		log.Printf("[%s] ✅ 获得层 %s 的锁，开始下载", nodeID, layerID)
 		if err := downloadLayer(nodeID, layerID, layerDuration); err != nil {
 			log.Printf("[%s] ❌ 层 %s 下载失败: %v", nodeID, layerID, err)
-			request.Success = false
-			request.Err = err
+			request.Error = err.Error() // 设置错误信息，服务端会根据 Error 自动推断 Success = false
 			if unlockErr := lockClient.Unlock(ctx, request); unlockErr != nil {
 				log.Printf("[%s] ⚠️  释放层 %s 的锁失败: %v", nodeID, layerID, unlockErr)
 			}
 			return
 		}
 		log.Printf("[%s] 🔓 释放层 %s 的锁（成功）", nodeID, layerID)
-		request.Success = true
+		request.Error = "" // 空字符串表示操作成功，服务端会根据 Error 自动推断 Success = true
 		if err := lockClient.Unlock(ctx, request); err != nil {
 			log.Printf("[%s] ⚠️  释放层 %s 的锁失败: %v", nodeID, layerID, err)
 		}

@@ -49,7 +49,7 @@ func TestConcurrentPullOperations(t *testing.T) {
 					Type:       OperationTypePull,
 					ResourceID: resourceID,
 					NodeID:     nodeID,
-					Success:    true,
+					Error:      "", // 空字符串表示操作成功
 				}
 				lm.Unlock(unlockReq)
 			}
@@ -87,7 +87,7 @@ func TestPullSkipWhenRefCountNotZero(t *testing.T) {
 		Type:       OperationTypePull,
 		ResourceID: resourceID,
 		NodeID:     "node-1",
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq1)
 
@@ -130,7 +130,7 @@ func TestDeleteWithReferences(t *testing.T) {
 		Type:       OperationTypePull,
 		ResourceID: resourceID,
 		NodeID:     "node-1",
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 
@@ -179,7 +179,7 @@ func TestDeleteWithoutReferences(t *testing.T) {
 		Type:       OperationTypeDelete,
 		ResourceID: resourceID,
 		NodeID:     "node-1",
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 
@@ -214,7 +214,7 @@ func TestDeleteWhenRefCountZero(t *testing.T) {
 		Type:       OperationTypeDelete,
 		ResourceID: resourceID,
 		NodeID:     "node-1",
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 }
@@ -239,7 +239,7 @@ func TestUpdateWithReferences(t *testing.T) {
 		Type:       OperationTypePull,
 		ResourceID: resourceID,
 		NodeID:     "node-1",
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 
@@ -281,7 +281,7 @@ func TestUpdateWithoutReferencesRequired(t *testing.T) {
 		Type:       OperationTypePull,
 		ResourceID: resourceID,
 		NodeID:     "node-1",
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 
@@ -346,7 +346,7 @@ func TestFIFOQueue(t *testing.T) {
 		Type:       OperationTypePull,
 		ResourceID: resourceID,
 		NodeID:     "node-1",
-		Success:    false, // 操作失败，锁应该转交给队列中的下一个
+		Error:      "操作失败", // 非空字符串表示操作失败，锁应该转交给队列中的下一个
 	}
 	lm.Unlock(unlockReq)
 
@@ -397,7 +397,7 @@ func TestConcurrentDifferentResources(t *testing.T) {
 					Type:       OperationTypePull,
 					ResourceID: resourceID,
 					NodeID:     nodeID,
-					Success:    true,
+					Error:      "", // 空字符串表示操作成功
 				}
 				lm.Unlock(unlockReq)
 			}
@@ -425,7 +425,7 @@ func TestConcurrentDifferentResources(t *testing.T) {
 					Type:       OperationTypePull,
 					ResourceID: resourceID,
 					NodeID:     nodeID,
-					Success:    true,
+					Error:      "", // 空字符串表示操作成功
 				}
 				lm.Unlock(unlockReq)
 			}
@@ -517,7 +517,7 @@ func TestNodeConcurrentDifferentResources(t *testing.T) {
 		Type:       OperationTypePull,
 		ResourceID: layer2,
 		NodeID:     nodeB,
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	releasedB2 := lm.Unlock(unlockB2)
 	if !releasedB2 {
@@ -536,7 +536,7 @@ func TestNodeConcurrentDifferentResources(t *testing.T) {
 		Type:       OperationTypePull,
 		ResourceID: layer1,
 		NodeID:     nodeA,
-		Success:    false, // 操作失败，锁应该转交给队列中的节点B
+		Error:      "操作失败", // 非空字符串表示操作失败，锁应该转交给队列中的节点B
 	}
 	releasedA1 := lm.Unlock(unlockA1)
 	if !releasedA1 {
@@ -588,7 +588,7 @@ func TestReferenceCountAccuracy(t *testing.T) {
 		Type:       OperationTypePull,
 		ResourceID: resourceID,
 		NodeID:     node1,
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 

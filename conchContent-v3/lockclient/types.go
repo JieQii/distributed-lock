@@ -12,11 +12,11 @@ const (
 // Request 锁请求结构
 // Type + ResourceID 作为仲裁Key作为唯一标识
 type Request struct {
-	Type       string // 仲裁类型：pull, update, delete
-	ResourceID string // 仲裁目标资源的唯一标识（镜像层的digest）
-	NodeID     string // 发起仲裁的节点唯一标识
-	Err        error  // 错误信息（用于解锁时传递）
-	Success    bool   // 操作是否成功（用于解锁时传递）
+	Type       string `json:"type"`            // 仲裁类型：pull, update, delete
+	ResourceID string `json:"resource_id"`     // 仲裁目标资源的唯一标识（镜像层的digest）
+	NodeID     string `json:"node_id"`         // 发起仲裁的节点唯一标识
+	Error      string `json:"error,omitempty"` // 错误信息（用于解锁时传递，序列化为字符串）
+	// Success 字段已移除，服务端会根据 Error 自动推断：Error == "" → Success = true
 }
 
 // LockResponse 加锁响应

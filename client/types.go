@@ -18,9 +18,9 @@ type Request struct {
 	Type       string `json:"type"`            // 仲裁类型：pull, update, delete
 	ResourceID string `json:"resource_id"`     // 仲裁目标资源的唯一标识（镜像层的digest）
 	NodeID     string `json:"node_id"`         // 发起仲裁的节点唯一标识
-	Err        error  `json:"-"`               // 错误信息（用于内部传递，不序列化）
 	Error      string `json:"error,omitempty"` // 错误信息（用于解锁时传递，序列化为字符串）
-	Success    bool   `json:"success"`         // 操作是否成功（用于解锁时传递）
+	// Success 字段已移除，服务端会根据 Error 自动推断：Error == "" → Success = true
+	// contentv2 只需要设置 Error 即可
 }
 
 // LockResponse 加锁响应

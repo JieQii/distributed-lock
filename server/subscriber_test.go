@@ -82,7 +82,7 @@ func TestSubscriberPattern(t *testing.T) {
 		Type:       lockType,
 		ResourceID: resourceID,
 		NodeID:     nodeID,
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 
@@ -193,7 +193,7 @@ func TestMultipleSubscribers(t *testing.T) {
 		Type:       lockType,
 		ResourceID: resourceID,
 		NodeID:     nodeID,
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 
@@ -295,7 +295,7 @@ func TestSubscriberUnsubscribe(t *testing.T) {
 		Type:       lockType,
 		ResourceID: resourceID,
 		NodeID:     "node-test",
-		Success:    true,
+		Error:      "", // 空字符串表示操作成功
 	}
 	lm.Unlock(unlockReq)
 
@@ -330,4 +330,3 @@ func (m *mockSubscriber) Close() {
 	defer m.mu.Unlock()
 	m.closed = true
 }
-

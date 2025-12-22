@@ -61,8 +61,8 @@ func TestConcurrentPullOperations(t *testing.T) {
 				// 模拟pull操作
 				time.Sleep(10 * time.Millisecond)
 
-				// 释放锁
-				request.Success = true
+				// 释放锁（操作成功）
+				request.Error = "" // 空字符串表示操作成功
 				if err := client.Unlock(ctx, request); err != nil {
 					t.Logf("节点 %s 释放锁失败: %v", nodeID, err)
 				}

@@ -23,7 +23,7 @@ type Store struct {
 	writeStore content.Store // .../host
 	hostRoot   string
 	mergedRoot string
-	nodeID string
+	nodeID     string
 	lockClient *client.LockClient
 }
 
@@ -44,7 +44,7 @@ func NewStore(hostRoot, mergedRoot, nodeID string, lockClient *client.LockClient
 		writeStore: writeStore,
 		hostRoot:   hostRoot,
 		mergedRoot: mergedRoot,
-		nodeID: nodeID,
+		nodeID:     nodeID,
 		lockClient: lockClient,
 	}, nil
 }
@@ -56,6 +56,7 @@ func (s *Store) Info(ctx context.Context, dgst digest.Digest) (content.Info, err
 func (s *Store) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (content.ReaderAt, error) {
 	return s.readStore.ReaderAt(ctx, desc)
 }
+
 // TODO
 func (s *Store) Writer(ctx context.Context, opts ...content.WriterOpt) (content.Writer, error) {
 	var wOpts content.WriterOpts
@@ -84,12 +85,27 @@ func (s *Store) Writer(ctx context.Context, opts ...content.WriterOpt) (content.
 		return nil, fmt.Errorf("distributed lock failed for %s: %w", resourceID, err)
 	}
 
+	// 检查是否有错误
+	if result.Error != nil {
+		return nil, fmt.Errorf("distributed lock error for %s: %w", resourceID, result.Error)
+	}
+
+	// 如果操作被跳过（其他节点已完成），直接返回 AlreadyExists
+	// 注意：这里判断 Skipped 可以避免不必要的等待
+	// 如果服务端在第一次 TryLock 时就返回 skip=true，客户端可以直接返回，
+	// 而不需要进入 waitForLock() 等待 SSE 事件
+	if result.Skipped {
+		fmt.Printf("操作已跳过（其他节点已完成）resourceID=%q, nodeID=%q\n", resourceID, s.nodeID)
+		return nil, fmt.Errorf("content %v: %w", dgst, errdefs.ErrAlreadyExists)
+	}
+
+	// 如果获得锁，需要该节点真实写入
 	if result.Acquired {
-		// 获得锁：需要该节点真实写入
-		fmt.Printf("获得锁 resourceID=%q, nodeID=%q\n",resourceID,s.nodeID)
+		fmt.Printf("获得锁 resourceID=%q, nodeID=%q\n", resourceID, s.nodeID)
 		w, err := s.writeStore.Writer(ctx, opts...)
 		if err != nil {
 			req.Error = err.Error()
+			// Success 会在客户端自动根据 Error 推断，不需要手动设置
 			_ = client.ClusterUnLock(ctx, s.lockClient, req)
 			return nil, err
 		}
@@ -99,15 +115,10 @@ func (s *Store) Writer(ctx context.Context, opts ...content.WriterOpt) (content.
 			request:    req,
 			digest:     dgst,
 		}, nil
-	} 
-	// 未获得锁：表示别的节点已下载成功，查询是否存在该ingest
-	fmt.Printf("未获得锁：表示别的节点已下载成功 resourceID=%q, nodeID=%q\n",resourceID,s.nodeID)
-	if _, err := s.Info(ctx, dgst); err != nil {
-		fmt.Printf("警告: 未获得锁，但 blob 在 merged 中不存在")
-		return s.writeStore.Writer(ctx, opts...)
 	}
 
-	return nil, fmt.Errorf("content %v: %w", expected, errdefs.ErrAlreadyExists)
+	// 理论上不应该到达这里，因为 waitForLock 会一直等待直到获得锁或跳过
+	return nil, fmt.Errorf("unexpected lock result: acquired=%v, skipped=%v", result.Acquired, result.Skipped)
 }
 
 func (s *Store) Abort(ctx context.Context, ref string) error {
