@@ -102,7 +102,7 @@ func TestPullSkipWhenRefCountNotZero(t *testing.T) {
 		t.Errorf("不应该有错误: %s", errMsg2)
 	}
 	if skip2 {
-		t.Error("节点2不应跳过操作")
+		t.Error("节点2不应跳过操作（skip 现在总是 false）")
 	}
 	if !acquired2 {
 		t.Error("节点2应能获得锁（排队后）")
@@ -148,7 +148,7 @@ func TestDeleteWithReferences(t *testing.T) {
 		t.Error("期望delete操作获得锁")
 	}
 	if skip {
-		t.Error("不应跳过操作")
+		t.Error("不应跳过操作（skip 现在总是 false，上层已检查资源是否存在）")
 	}
 }
 
@@ -578,7 +578,7 @@ func TestReferenceCountAccuracy(t *testing.T) {
 	}
 	acquired, skip, _ := lm.TryLock(req)
 	if skip {
-		t.Fatal("第一个节点不应该跳过操作")
+		t.Fatal("第一个节点不应该跳过操作（skip 现在总是 false，上层已检查资源是否存在）")
 	}
 	if !acquired {
 		t.Fatal("第一个节点无法获取锁")
@@ -601,7 +601,7 @@ func TestReferenceCountAccuracy(t *testing.T) {
 	}
 	acquired2, skip2, _ := lm.TryLock(req2)
 	if skip2 {
-		t.Error("后续节点不应跳过操作")
+		t.Error("后续节点不应跳过操作（skip 现在总是 false，上层已检查资源是否存在）")
 	}
 	if !acquired2 {
 		t.Error("后续节点应能获得锁（排队后）")

@@ -18,7 +18,7 @@ func TestConcurrentPullOperations(t *testing.T) {
 			// 模拟锁服务
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"acquired":true,"skip":false,"message":"成功获得锁"}`))
+			w.Write([]byte(`{"acquired":true,"message":"成功获得锁"}`))
 		} else if r.URL.Path == "/unlock" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -88,7 +88,7 @@ func TestDeleteWithReferences(t *testing.T) {
 			// 模拟delete操作时引用计数不为0的情况
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"acquired":false,"skip":false,"error":"无法删除：当前有节点正在使用该资源","message":"无法删除：当前有节点正在使用该资源"}`))
+			w.Write([]byte(`{"acquired":false,"error":"无法删除：当前有节点正在使用该资源","message":"无法删除：当前有节点正在使用该资源"}`))
 		}
 	}))
 	defer server.Close()
@@ -126,7 +126,7 @@ func TestRetryMechanism(t *testing.T) {
 		// 第三次成功
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"acquired":true,"skip":false,"message":"成功获得锁"}`))
+		w.Write([]byte(`{"acquired":true,"message":"成功获得锁"}`))
 	}))
 	defer server.Close()
 
@@ -162,7 +162,7 @@ func TestTimeout(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"acquired":true,"skip":false,"message":"成功获得锁"}`))
+		w.Write([]byte(`{"acquired":true,"message":"成功获得锁"}`))
 	}))
 	defer server.Close()
 

@@ -42,12 +42,12 @@ func processLayer(ctx context.Context, lockClient *client.LockClient, nodeID, la
 		return
 	}
 
-	log.Printf("[%s] 🔒 层 %s 锁结果: acquired=%v, skipped=%v",
-		nodeID, layerID, result.Acquired, result.Skipped)
+	log.Printf("[%s] 🔒 层 %s 锁结果: acquired=%v",
+		nodeID, layerID, result.Acquired)
 
-	// 如果跳过，说明其他节点已完成
-	if result.Skipped {
-		log.Printf("[%s] ⏭️  层 %s 已由其他节点完成，跳过下载", nodeID, layerID)
+	// 检查是否有错误（包括其他节点已完成操作的情况）
+	if result.Error != nil {
+		log.Printf("[%s] ⚠️  层 %s 获取锁时发生错误: %v", nodeID, layerID, result.Error)
 		return
 	}
 
@@ -70,13 +70,9 @@ func processLayer(ctx context.Context, lockClient *client.LockClient, nodeID, la
 		return
 	}
 
-	// 如果没有获得锁，也没有跳过（可能是错误情况）
-	if result.Error != nil {
-		log.Printf("[%s] ❌ 层 %s 获取锁时发生错误: %v", nodeID, layerID, result.Error)
-		return
-	}
-
-	log.Printf("[%s] ⚠️  层 %s 未获得锁，也没有跳过（异常情况）", nodeID, layerID)
+	// 如果没有获得锁且没有错误，说明锁被其他节点持有，需要等待
+	// 这种情况应该通过 SSE 订阅等待，理论上不应该到达这里
+	log.Printf("[%s] ⚠️  层 %s 未获得锁（异常情况，应该通过 SSE 订阅等待）", nodeID, layerID)
 }
 
 func main() {
