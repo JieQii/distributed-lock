@@ -125,16 +125,7 @@ func (c *LockClient) tryLockOnce(ctx context.Context, request *Request) (*LockRe
 	if lockResp.Error != "" {
 		return &LockResult{
 			Acquired: false,
-			Skipped:  false,
 			Error:    fmt.Errorf("%s", lockResp.Error),
-		}, nil
-	}
-
-	// 如果需要跳过操作（操作已完成且成功），直接返回
-	if lockResp.Skip {
-		return &LockResult{
-			Acquired: false,
-			Skipped:  true,
 		}, nil
 	}
 
@@ -142,7 +133,6 @@ func (c *LockClient) tryLockOnce(ctx context.Context, request *Request) (*LockRe
 	if lockResp.Acquired {
 		return &LockResult{
 			Acquired: true,
-			Skipped:  false,
 		}, nil
 	}
 
@@ -270,18 +260,20 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	if event.Error != "" {
 		return &LockResult{
 			Acquired: false,
-			Skipped:  false,
 			Error:    fmt.Errorf("%s", event.Error),
 		}, true, false
 	}
 
-	// 如果操作成功，跳过操作
-	// 说明：当获得锁的节点操作成功时，服务端会广播事件给所有等待的节点
-	// 这些等待的节点收到事件后，可以跳过操作（因为其他节点已经完成了）
+	// 如果操作成功，说明其他节点已完成操作
+	// 注意：上层已经检查过资源是否存在，如果资源已存在就不会请求锁
+	// 所以这里不需要返回 Skipped，直接返回错误让上层处理
+	// 上层应该通过文件系统检查资源是否已存在
 	if event.Success {
+		// 操作成功，但当前节点没有获得锁
+		// 上层应该检查资源是否已存在，如果存在就不需要操作
 		return &LockResult{
 			Acquired: false,
-			Skipped:  true,
+			Error:    fmt.Errorf("其他节点已完成操作，请检查资源是否已存在"),
 		}, true, false
 	}
 
@@ -298,7 +290,6 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	if err != nil {
 		return &LockResult{
 			Acquired: false,
-			Skipped:  false,
 			Error:    fmt.Errorf("序列化请求失败: %w", err),
 		}, true, false
 	}
@@ -307,7 +298,6 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	if err != nil {
 		return &LockResult{
 			Acquired: false,
-			Skipped:  false,
 			Error:    fmt.Errorf("创建请求失败: %w", err),
 		}, true, false
 	}
@@ -317,7 +307,6 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	if err != nil {
 		return &LockResult{
 			Acquired: false,
-			Skipped:  false,
 			Error:    fmt.Errorf("获取锁失败: %w", err),
 		}, true, false
 	}
@@ -327,7 +316,6 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	if err != nil {
 		return &LockResult{
 			Acquired: false,
-			Skipped:  false,
 			Error:    fmt.Errorf("读取响应失败: %w", err),
 		}, true, false
 	}
@@ -336,7 +324,6 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	if err := json.Unmarshal(body, &lockResp); err != nil {
 		return &LockResult{
 			Acquired: false,
-			Skipped:  false,
 			Error:    fmt.Errorf("解析响应失败: %w", err),
 		}, true, false
 	}
@@ -345,16 +332,7 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	if lockResp.Error != "" {
 		return &LockResult{
 			Acquired: false,
-			Skipped:  false,
 			Error:    fmt.Errorf("%s", lockResp.Error),
-		}, true, false
-	}
-
-	// 如果需要跳过操作
-	if lockResp.Skip {
-		return &LockResult{
-			Acquired: false,
-			Skipped:  true,
 		}, true, false
 	}
 
@@ -362,7 +340,6 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	if lockResp.Acquired {
 		return &LockResult{
 			Acquired: true,
-			Skipped:  false,
 		}, true, false
 	}
 

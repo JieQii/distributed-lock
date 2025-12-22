@@ -77,19 +77,20 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 	if lockInfo, exists := shard.locks[key]; exists {
 		// 如果操作已完成
 		if lockInfo.Completed {
+			// 操作已完成：清理锁
+			// 注意：上层已经检查过资源是否存在，如果资源已存在就不会请求锁
+			// 所以这里不需要返回 skip，直接清理锁即可
 			if lockInfo.Success {
-				// 操作已完成且成功：清理锁，返回 skip=true，让客户端跳过操作
-				// 不分配锁给队列中的节点，让它们通过轮询发现操作已完成
-				log.Printf("[TryLock] 操作已完成且成功: key=%s, node=%s, 返回skip=true",
-					key, request.NodeID)
-				delete(shard.locks, key)
-				return false, true, "" // acquired=false, skip=true
+				log.Printf("[TryLock] 操作已完成且成功: key=%s, 清理锁", key)
 			} else {
 				// 操作已完成但失败：清理锁并分配锁给队列中的下一个节点，让它继续尝试
 				log.Printf("[TryLock] 操作已完成但失败: key=%s, 处理队列", key)
-				delete(shard.locks, key)
 				lm.processQueue(shard, key)
 			}
+			delete(shard.locks, key)
+			// 返回 acquired=false, skip=false，让客户端继续等待或重试
+			// 如果资源已存在，上层应该已经检查过，不会请求锁
+			return false, false, ""
 		} else {
 			// 锁被占用但操作未完成
 			// 如果当前请求的节点就是锁的持有者（可能是队列中的旧请求被分配了锁，现在客户端重新请求）

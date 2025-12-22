@@ -26,7 +26,6 @@ type Request struct {
 // LockResponse 加锁响应
 type LockResponse struct {
 	Acquired bool   `json:"acquired"` // 是否获得锁
-	Skip     bool   `json:"skip"`     // 是否需要跳过操作（操作已完成且成功）
 	Message  string `json:"message"`  // 响应消息
 	Error    string `json:"error"`    // 错误信息（例如delete操作时引用计数不为0）
 }
@@ -40,7 +39,6 @@ type UnlockResponse struct {
 // LockResult 加锁结果
 type LockResult struct {
 	Acquired bool  // 是否获得锁
-	Skipped  bool  // 是否跳过操作（操作已完成且成功）
 	Error    error // 错误信息
 }
 

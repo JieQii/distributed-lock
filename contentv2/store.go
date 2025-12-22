@@ -90,15 +90,6 @@ func (s *Store) Writer(ctx context.Context, opts ...content.WriterOpt) (content.
 		return nil, fmt.Errorf("distributed lock error for %s: %w", resourceID, result.Error)
 	}
 
-	// 如果操作被跳过（其他节点已完成），直接返回 AlreadyExists
-	// 注意：这里判断 Skipped 可以避免不必要的等待
-	// 如果服务端在第一次 TryLock 时就返回 skip=true，客户端可以直接返回，
-	// 而不需要进入 waitForLock() 等待 SSE 事件
-	if result.Skipped {
-		fmt.Printf("操作已跳过（其他节点已完成）resourceID=%q, nodeID=%q\n", resourceID, s.nodeID)
-		return nil, fmt.Errorf("content %v: %w", dgst, errdefs.ErrAlreadyExists)
-	}
-
 	// 如果获得锁，需要该节点真实写入
 	if result.Acquired {
 		fmt.Printf("获得锁 resourceID=%q, nodeID=%q\n", resourceID, s.nodeID)
@@ -117,8 +108,8 @@ func (s *Store) Writer(ctx context.Context, opts ...content.WriterOpt) (content.
 		}, nil
 	}
 
-	// 理论上不应该到达这里，因为 waitForLock 会一直等待直到获得锁或跳过
-	return nil, fmt.Errorf("unexpected lock result: acquired=%v, skipped=%v", result.Acquired, result.Skipped)
+	// 理论上不应该到达这里，因为 waitForLock 会一直等待直到获得锁
+	return nil, fmt.Errorf("unexpected lock result: acquired=%v", result.Acquired)
 }
 
 func (s *Store) Abort(ctx context.Context, ref string) error {

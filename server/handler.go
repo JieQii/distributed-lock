@@ -38,11 +38,11 @@ func (h *Handler) Lock(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[Lock] 收到加锁请求: type=%s, resource_id=%s, node_id=%s",
 		request.Type, request.ResourceID, request.NodeID)
 
-	acquired, skip, errMsg := h.lockManager.TryLock(&request)
+	acquired, _, errMsg := h.lockManager.TryLock(&request)
 
 	response := map[string]interface{}{
 		"acquired": acquired,
-		"skip":     skip, // 兼容字段，server不再决定跳过
+		"skip":     false, // 不再使用 skip，上层已经检查过资源是否存在
 	}
 
 	if errMsg != "" {
@@ -55,10 +55,6 @@ func (h *Handler) Lock(w http.ResponseWriter, r *http.Request) {
 	} else if acquired {
 		response["message"] = "成功获得锁"
 		log.Printf("[Lock] 成功加锁: resource_id=%s, node_id=%s",
-			request.ResourceID, request.NodeID)
-	} else if skip {
-		response["message"] = "操作已完成，跳过操作"
-		log.Printf("[Lock] 操作已完成，跳过: resource_id=%s, node_id=%s",
 			request.ResourceID, request.NodeID)
 	} else {
 		response["message"] = "锁已被占用，已加入等待队列"
