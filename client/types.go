@@ -1,6 +1,9 @@
 package client
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // 操作类型常量（与服务端保持一致）
 const (
@@ -41,11 +44,21 @@ type LockResult struct {
 	Error    error // 错误信息
 }
 
+// OperationEvent 操作完成事件（与服务端保持一致）
+type OperationEvent struct {
+	Type        string    `json:"type"`         // 操作类型：pull, update, delete
+	ResourceID  string    `json:"resource_id"`  // 资源ID
+	NodeID      string    `json:"node_id"`      // 执行操作的节点ID
+	Success     bool      `json:"success"`      // 操作是否成功
+	Error       string    `json:"error"`        // 错误信息（如果有）
+	CompletedAt time.Time `json:"completed_at"` // 完成时间
+}
+
 // ClusterLock 获取分布式锁
-// 1. 获取到锁的直接返回，开始后续操作；
-// 2. 没有获得锁的等待：
-//    2.1. 获得锁的节点操作成功，那么直接返回，跳过下载操作；
-//    2.2. 获得锁的节点操作失败，需要重新选择一个节点解锁，剩余节点继续等待；
+//  1. 获取到锁的直接返回，开始后续操作；
+//  2. 没有获得锁的等待：
+//     2.1. 获得锁的节点操作成功，那么直接返回，跳过下载操作；
+//     2.2. 获得锁的节点操作失败，需要重新选择一个节点解锁，剩余节点继续等待；
 func ClusterLock(ctx context.Context, client *LockClient, request *Request) (*LockResult, error) {
 	return client.Lock(ctx, request)
 }

@@ -1,12 +1,15 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -148,112 +151,223 @@ func (c *LockClient) tryLockOnce(ctx context.Context, request *Request) (*LockRe
 	return c.waitForLock(ctx, request)
 }
 
-// waitForLock 等待锁释放
+// waitForLock 等待锁释放（使用 SSE 订阅模式）
 func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockResult, error) {
-	ticker := time.NewTicker(500 * time.Millisecond) // 每500ms轮询一次
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-ticker.C:
-			// 再次尝试获取锁
-			jsonData, err := json.Marshal(request)
-			if err != nil {
-				continue
-			}
+		default:
+		}
 
-			req, err := http.NewRequestWithContext(ctx, "POST", c.ServerURL+"/lock/status", bytes.NewBuffer(jsonData))
-			if err != nil {
-				continue
-			}
-			req.Header.Set("Content-Type", "application/json")
+		// 构建订阅 URL
+		subscribeURL := fmt.Sprintf("%s/lock/subscribe?type=%s&resource_id=%s",
+			c.ServerURL,
+			url.QueryEscape(request.Type),
+			url.QueryEscape(request.ResourceID))
 
-			resp, err := c.Client.Do(req)
-			if err != nil {
-				continue
-			}
+		// 创建 SSE 订阅请求
+		req, err := http.NewRequestWithContext(ctx, "GET", subscribeURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("创建订阅请求失败: %w", err)
+		}
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Cache-Control", "no-cache")
 
-			body, err := io.ReadAll(resp.Body)
+		// 发送请求
+		resp, err := c.Client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("订阅失败: %w", err)
+		}
+
+		// 检查响应状态码
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			return nil, fmt.Errorf("订阅失败，状态码: %d, 响应: %s", resp.StatusCode, string(body))
+		}
 
-			if err != nil {
-				continue
+		// 使用 bufio.Scanner 读取 SSE 流
+		scanner := bufio.NewScanner(resp.Body)
+		var currentEventJSON string
+
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				resp.Body.Close()
+				return nil, ctx.Err()
+			default:
 			}
 
-			var statusResp struct {
-				Acquired  bool   `json:"acquired"`
-				Completed bool   `json:"completed"` // 操作是否完成
-				Success   bool   `json:"success"`   // 操作是否成功
-				Error     string `json:"error"`     // 错误信息
-			}
-			if err := json.Unmarshal(body, &statusResp); err != nil {
-				continue
-			}
+			line := scanner.Text()
 
-			// 检查是否有错误（例如delete操作时引用计数不为0）
-			if statusResp.Error != "" {
-				return &LockResult{
-					Acquired: false,
-					Skipped:  false,
-					Error:    fmt.Errorf("%s", statusResp.Error),
-				}, nil
-			}
-
-			// 如果操作已完成且成功，说明其他节点已经完成，当前节点跳过操作
-			if statusResp.Completed && statusResp.Success {
-				return &LockResult{
-					Acquired: false,
-					Skipped:  true,
-				}, nil // 跳过下载操作
-			}
-
-			// 如果操作已完成但失败，继续等待获取锁
-			if statusResp.Completed && !statusResp.Success {
-				// 再次尝试获取锁
-				jsonData, _ := json.Marshal(request)
-				req, _ := http.NewRequestWithContext(ctx, "POST", c.ServerURL+"/lock", bytes.NewBuffer(jsonData))
-				req.Header.Set("Content-Type", "application/json")
-				resp, err := c.Client.Do(req)
-				if err == nil {
-					body, _ := io.ReadAll(resp.Body)
-					resp.Body.Close()
-					var lockResp LockResponse
-					if json.Unmarshal(body, &lockResp) == nil {
-						// 检查是否有错误
-						if lockResp.Error != "" {
-							return &LockResult{
-								Acquired: false,
-								Skipped:  false,
-								Error:    fmt.Errorf("%s", lockResp.Error),
-							}, nil
+			// SSE 格式: data: {json}\n\n
+			// 空行表示事件结束
+			if line == "" {
+				// 处理之前收集的事件数据
+				if currentEventJSON != "" {
+					var event OperationEvent
+					if err := json.Unmarshal([]byte(currentEventJSON), &event); err == nil {
+						result, done, needResubscribe := c.handleOperationEvent(ctx, request, &event)
+						if done {
+							resp.Body.Close()
+							return result, nil
 						}
-						if lockResp.Skip {
-							return &LockResult{
-								Acquired: false,
-								Skipped:  true,
-							}, nil
-						}
-						if lockResp.Acquired {
-							return &LockResult{
-								Acquired: true,
-								Skipped:  false,
-							}, nil // 获得锁，可以开始操作
+						if needResubscribe {
+							// 需要重新订阅，关闭当前连接并重新开始
+							resp.Body.Close()
+							break
 						}
 					}
+					currentEventJSON = ""
 				}
-			}
-
-			// 如果获得锁，可以开始操作
-			if statusResp.Acquired {
-				return &LockResult{
-					Acquired: true,
-					Skipped:  false,
-				}, nil
+			} else if strings.HasPrefix(line, "data: ") {
+				// 提取 JSON 数据
+				currentEventJSON = strings.TrimPrefix(line, "data: ")
 			}
 		}
+
+		// 如果扫描结束（连接断开），检查是否有错误
+		if err := scanner.Err(); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("读取 SSE 流失败: %w", err)
+		}
+
+		// 处理最后一个事件（如果连接关闭前没有空行）
+		if currentEventJSON != "" {
+			var event OperationEvent
+			if err := json.Unmarshal([]byte(currentEventJSON), &event); err == nil {
+				result, done, needResubscribe := c.handleOperationEvent(ctx, request, &event)
+				if done {
+					resp.Body.Close()
+					return result, nil
+				}
+				if needResubscribe {
+					resp.Body.Close()
+					// 继续外层循环，重新订阅
+					continue
+				}
+			}
+		}
+
+		resp.Body.Close()
+
+		// 连接正常关闭，但没有收到事件，返回错误
+		return nil, fmt.Errorf("SSE 连接关闭，未收到事件")
 	}
+}
+
+// handleOperationEvent 处理操作完成事件
+// 返回值: (结果, 是否完成, 是否需要重新订阅)
+func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request, event *OperationEvent) (*LockResult, bool, bool) {
+	// 验证事件是否匹配当前请求
+	if event.Type != request.Type || event.ResourceID != request.ResourceID {
+		// 事件不匹配，继续等待
+		return nil, false, false
+	}
+
+	// 检查是否有错误
+	if event.Error != "" {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  false,
+			Error:    fmt.Errorf("%s", event.Error),
+		}, true, false
+	}
+
+	// 如果操作成功，跳过操作
+	// 说明：当获得锁的节点操作成功时，服务端会广播事件给所有等待的节点
+	// 这些等待的节点收到事件后，可以跳过操作（因为其他节点已经完成了）
+	if event.Success {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  true,
+		}, true, false
+	}
+
+	// 如果操作失败，再次尝试获取锁
+	// 说明：当获得锁的节点操作失败时，服务端会：
+	// 1. 删除锁
+	// 2. 通过 processQueue 将锁分配给等待队列中的第一个节点（FIFO）
+	// 3. 广播操作失败事件给所有订阅者
+	//
+	// 因此：
+	// - 如果当前节点是队列中的第一个，再次调用 /lock 会获得锁
+	// - 如果当前节点不是队列中的第一个，再次调用 /lock 不会获得锁，需要重新订阅等待
+	jsonData, err := json.Marshal(request)
+	if err != nil {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  false,
+			Error:    fmt.Errorf("序列化请求失败: %w", err),
+		}, true, false
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.ServerURL+"/lock", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  false,
+			Error:    fmt.Errorf("创建请求失败: %w", err),
+		}, true, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  false,
+			Error:    fmt.Errorf("获取锁失败: %w", err),
+		}, true, false
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  false,
+			Error:    fmt.Errorf("读取响应失败: %w", err),
+		}, true, false
+	}
+
+	var lockResp LockResponse
+	if err := json.Unmarshal(body, &lockResp); err != nil {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  false,
+			Error:    fmt.Errorf("解析响应失败: %w", err),
+		}, true, false
+	}
+
+	// 检查是否有错误
+	if lockResp.Error != "" {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  false,
+			Error:    fmt.Errorf("%s", lockResp.Error),
+		}, true, false
+	}
+
+	// 如果需要跳过操作
+	if lockResp.Skip {
+		return &LockResult{
+			Acquired: false,
+			Skipped:  true,
+		}, true, false
+	}
+
+	// 如果获得锁
+	if lockResp.Acquired {
+		return &LockResult{
+			Acquired: true,
+			Skipped:  false,
+		}, true, false
+	}
+
+	// 没有获得锁，说明其他节点已经获得了锁，需要重新订阅等待
+	return nil, false, true
 }
 
 // shouldRetry 判断是否应该重试
