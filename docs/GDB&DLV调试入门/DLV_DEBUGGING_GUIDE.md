@@ -58,7 +58,7 @@ dlv debug
 (dlv) break handler.go:69          # Unlock 处理函数
 (dlv) break handler.go:148         # Subscribe 处理函数
 (dlv) break lock_manager.go:67     # TryLock 函数
-(dlv) break lock_manager.go:128    # Unlock 函数
+(dlv) break lock_manager.go:129    # Unlock 函数（注意：128 行是注释，使用 129 行）
 (dlv) break lock_manager.go:329    # broadcastEvent 函数
 
 # 查看所有断点
@@ -135,9 +135,73 @@ curl -N "http://localhost:8086/lock/subscribe?type=pull&resource_id=sha256:test1
 
 ### 方法1：直接调试测试程序
 
+**重要：文件位置要求**
+
+`test-client-multi-layer.go` 文件必须放在**项目根目录**（与 `go.mod` 同级），因为：
+- 文件使用了 `import "distributed-lock/client"` 导入路径
+- 模块名是 `distributed-lock`（在 `go.mod` 中定义）
+- Go 模块系统要求从项目根目录解析导入路径
+
+**当前文件位置**：`c:\Users\admin\Desktop\distributed-lock\test-client-multi-layer.go` ✅（正确）
+
+**调试步骤**：
+
 ```bash
-# 调试 test-client-multi-layer.go
+# 1. 确保在项目根目录
+cd c:\Users\admin\Desktop\distributed-lock
+
+# 2. 调试 test-client-multi-layer.go
 dlv debug test-client-multi-layer.go
+```
+
+**如果文件不在根目录**：
+- ❌ 如果放在子目录（如 `examples/`），导入路径会找不到 `distributed-lock/client`
+- ✅ 解决方案：将文件移动到项目根目录，或修改导入路径
+
+### 特殊情况：只有 client 文件夹和测试文件
+
+如果你的目录结构是：
+```
+your-folder/
+  ├── test-client-multi-layer.go
+  └── client/
+      ├── client.go
+      └── types.go
+```
+
+**需要创建 `go.mod` 文件**：
+
+1. **在 `your-folder/` 目录下创建 `go.mod`**：
+```bash
+cd your-folder
+go mod init distributed-lock
+```
+
+2. **如果 client 包依赖其他包，运行**：
+```bash
+go mod tidy
+```
+
+3. **然后就可以正常调试**：
+```bash
+dlv debug test-client-multi-layer.go
+```
+
+**目录结构应该是**：
+```
+your-folder/
+  ├── go.mod              # ← 必须创建
+  ├── test-client-multi-layer.go
+  └── client/
+      ├── client.go
+      └── types.go
+```
+
+**验证方法**：
+```bash
+# 在 your-folder 目录下运行
+go build test-client-multi-layer.go
+# 如果编译成功，说明配置正确
 ```
 
 ### 方法2：调试 contentv2
@@ -220,7 +284,7 @@ dlv debug
 # 设置断点
 (dlv) break handler.go:41
 (dlv) break lock_manager.go:67
-(dlv) break lock_manager.go:128
+(dlv) break lock_manager.go:129    # Unlock（注意：128 行是注释）
 (dlv) break lock_manager.go:329
 
 # 运行
@@ -315,7 +379,7 @@ dlv debug test-client-multi-layer.go
 ```bash
 (dlv) break handler.go:148          # Subscribe 处理函数
 (dlv) break lock_manager.go:277     # Subscribe（注册订阅者）
-(dlv) break lock_manager.go:128     # Unlock（操作完成）
+(dlv) break lock_manager.go:129    # Unlock（注意：128 行是注释）     # Unlock（操作完成）
 (dlv) break lock_manager.go:161     # 操作成功后的广播触发点
 (dlv) break lock_manager.go:325     # broadcastEvent（广播函数）
 (dlv) break sse_subscriber.go:29    # SendEvent（发送事件给客户端）
@@ -340,7 +404,7 @@ dlv debug
 # 设置断点
 (dlv) break handler.go:148
 (dlv) break lock_manager.go:277
-(dlv) break lock_manager.go:128
+(dlv) break lock_manager.go:129    # Unlock（注意：128 行是注释）
 (dlv) break lock_manager.go:161
 (dlv) break lock_manager.go:325
 (dlv) break sse_subscriber.go:29
@@ -675,7 +739,7 @@ dlv debug
 
 (dlv) break handler.go:41
 (dlv) break lock_manager.go:67
-(dlv) break lock_manager.go:128
+(dlv) break lock_manager.go:129    # Unlock（注意：128 行是注释）
 (dlv) break lock_manager.go:329
 (dlv) continue
 ```
@@ -744,7 +808,7 @@ dlv debug test-client-multi-layer.go
 # 设置断点
 break handler.go:41
 break lock_manager.go:67
-break lock_manager.go:128
+break lock_manager.go:129    # Unlock（注意：128 行是注释）
 
 # 运行程序
 continue
@@ -851,6 +915,84 @@ export PATH=$PATH:$(go env GOPATH)/bin
 (dlv) goroutine 2
 (dlv) stack
 (dlv) locals
+```
+
+### 问题5：调试时客户端请求超时
+
+**问题现象**：
+```
+请求超时: Post "http://127.0.0.1:8086/lock": context deadline exceeded
+```
+
+**原因分析**：
+1. 服务端在调试模式下，当停在断点时，**无法处理新的 HTTP 请求**
+2. 客户端设置了超时时间（如 5 秒），当服务端长时间停在断点时，请求会超时
+3. 客户端会重试，但服务端仍然停在断点，导致所有请求都超时
+
+**解决方案**：
+
+**方案1：快速通过断点（推荐）**
+```bash
+# 在服务端调试时，不要长时间停在断点
+# 快速查看变量后立即 continue
+(dlv) print request
+(dlv) continue  # 立即继续，不要长时间停留
+```
+
+**方案2：增加客户端超时时间**
+```go
+// 在 test-client-multi-layer.go 中修改
+clientA.RequestTimeout = 60 * time.Second  // 从 5 秒增加到 60 秒
+clientB.RequestTimeout = 60 * time.Second
+```
+
+**方案3：使用条件断点**
+```bash
+# 只在特定条件下停止（减少不必要的停止）
+(dlv) break lock_manager.go:67 if request.NodeID == "NODEA"
+(dlv) break lock_manager.go:129 if request.NodeID == "NODEA"
+```
+
+**方案4：先让服务端正常运行，只在关键点设置断点**
+```bash
+# 只设置最重要的断点
+(dlv) break lock_manager.go:325  # 只在广播事件时停止
+(dlv) break sse_subscriber.go:29  # 只在发送事件时停止
+```
+
+**方案5：使用日志而不是断点**
+```bash
+# 在代码中添加日志，而不是设置断点
+log.Printf("[DEBUG] 收到请求: %+v", request)
+```
+
+**调试最佳实践**：
+1. ✅ **快速查看变量**：`print variable` → 立即 `continue`
+2. ✅ **使用条件断点**：只在需要时停止
+3. ✅ **增加超时时间**：调试时设置更长的超时
+4. ✅ **分步调试**：先调试服务端，再调试客户端
+5. ❌ **避免长时间停在断点**：会导致客户端请求超时
+
+**验证方法**：
+```bash
+# 在服务端调试时，快速通过断点
+(dlv) break handler.go:41
+(dlv) continue
+# 当停在断点时，快速执行：
+(dlv) print request
+(dlv) continue  # 立即继续，不要停留超过 1 秒
+```
+
+**注意**：断点行号问题
+```bash
+# 如果断点设置失败，可能是行号不对
+(dlv) break lock_manager.go:129    # Unlock（注意：128 行是注释）
+# Command failed: could not find statement at lock_manager.go:128
+
+# 解决：查看实际代码，找到可执行语句的行号
+(dlv) list lock_manager.go:125
+# 128 行可能是注释或空行，使用 129 行
+(dlv) break lock_manager.go:129
 ```
 
 ---
