@@ -68,28 +68,30 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 	key := LockKey(request.Type, request.ResourceID)
 	shard := lm.getShard(key) // 获取对应的分段
 
+	// 1. 获取分段锁
 	shard.mu.Lock()
-	defer shard.mu.Unlock()
 
 	request.Timestamp = time.Now()
 
-	// 第一步：检查是否已经有锁（是否有其他节点在操作）
+	// 2. 检查资源锁是否存在
 	if lockInfo, exists := shard.locks[key]; exists {
-		// 如果操作已完成
+		// 资源锁存在
+		// 如果操作已完成（这种情况不应该发生，因为操作成功时锁已被删除）
+		// 但为了兼容性和处理操作失败的情况，保留这个检查
 		if lockInfo.Completed {
 			// 操作已完成：清理锁
-			// 注意：上层已经检查过资源是否存在，如果资源已存在就不会请求锁
-			// 所以这里不需要返回 skip，直接清理锁即可
 			if lockInfo.Success {
-				log.Printf("[TryLock] 操作已完成且成功: key=%s, 清理锁", key)
+				// 操作成功时锁应该已经被删除，这种情况不应该发生
+				log.Printf("[TryLock] 操作已完成且成功: key=%s, 清理锁（不应该发生）", key)
 			} else {
 				// 操作已完成但失败：清理锁并分配锁给队列中的下一个节点，让它继续尝试
 				log.Printf("[TryLock] 操作已完成但失败: key=%s, 处理队列", key)
 				lm.processQueue(shard, key)
 			}
 			delete(shard.locks, key)
+			// 3. 立即释放分段锁
+			shard.mu.Unlock()
 			// 返回 acquired=false, skip=false，让客户端继续等待或重试
-			// 如果资源已存在，上层应该已经检查过，不会请求锁
 			return false, false, ""
 		} else {
 			// 锁被占用但操作未完成
@@ -103,17 +105,21 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 					key, request.NodeID)
 				lockInfo.Request = request
 				lockInfo.AcquiredAt = time.Now()
+				// 3. 立即释放分段锁
+				shard.mu.Unlock()
 				return true, false, ""
 			}
 			// 其他节点持有锁，加入等待队列
 			log.Printf("[TryLock] 加入等待队列: key=%s, node=%s, 当前持有者=%s",
 				key, request.NodeID, lockInfo.Request.NodeID)
 			lm.addToQueue(shard, key, request)
+			// 3. 立即释放分段锁
+			shard.mu.Unlock()
 			return false, false, ""
 		}
 	}
 
-	// 没有锁，直接获取锁
+	// 资源锁不存在，创建新的资源锁
 	log.Printf("[TryLock] 直接获取锁成功: key=%s, node=%s", key, request.NodeID)
 	shard.locks[key] = &LockInfo{
 		Request:    request,
@@ -121,6 +127,9 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 		Completed:  false,
 		Success:    false,
 	}
+
+	// 4. 立即释放分段锁
+	shard.mu.Unlock()
 
 	return true, false, ""
 }
@@ -151,14 +160,13 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 	lockInfo.CompletedAt = time.Now()
 
 	if lockInfo.Success {
-		// 操作成功：保留锁信息（标记为已完成），让队列中的节点通过轮询发现操作已完成
-		// 不立即删除锁，也不分配锁给队列中的节点
-		// 队列中的节点通过轮询 /lock/status 会发现 completed=true && success=true，从而跳过操作
-		// 锁会在 TryLock 中被清理（当发现操作已完成时）
-		log.Printf("[Unlock] 操作成功，保留锁信息: key=%s, node=%s, 等待队列中的节点通过轮询发现",
-			key, request.NodeID)
+		// 操作成功：直接释放锁
+		// 等待的节点通过SSE订阅已经收到事件，不需要保留锁
+		// 如果资源已存在，客户端不会请求锁（请求前会检查）
+		// 如果资源不存在，客户端会重新请求锁（此时锁已被清理，可以重新获取）
+		log.Printf("[Unlock] 操作成功，释放锁: key=%s, node=%s", key, request.NodeID)
 
-		// 触发订阅消息广播
+		// 触发订阅消息广播（在删除锁之前，确保订阅者能收到事件）
 		lm.broadcastEvent(shard, key, &OperationEvent{
 			Type:        request.Type,
 			ResourceID:  request.ResourceID,
@@ -167,6 +175,14 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 			Error:       request.Error,
 			CompletedAt: lockInfo.CompletedAt,
 		})
+
+		// 删除锁，避免内存泄漏
+		delete(shard.locks, key)
+
+		// 注意：不调用 processQueue，因为：
+		// 1. 操作成功，资源已存在，队列中的节点不应该继续操作
+		// 2. 队列中的节点通过SSE收到事件后，会重新检查资源
+		// 3. 如果资源存在，不会请求锁；如果资源不存在，会重新请求锁（此时锁已被清理）
 	} else {
 		// 操作失败：删除锁并分配锁给队列中的下一个节点，让它继续尝试
 		log.Printf("[Unlock] 操作失败，唤醒队列: key=%s, node=%s", key, request.NodeID)
@@ -185,27 +201,6 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 	}
 
 	return true
-}
-
-// GetLockStatus 获取锁状态
-// 返回：是否是当前节点持有的锁，操作是否完成，操作是否成功
-func (lm *LockManager) GetLockStatus(lockType, resourceID, nodeID string) (bool, bool, bool) {
-	key := LockKey(lockType, resourceID)
-	shard := lm.getShard(key) // 获取对应的分段
-
-	shard.mu.RLock()
-	defer shard.mu.RUnlock()
-
-	lockInfo, exists := shard.locks[key]
-
-	if !exists {
-		return false, false, false // 没有锁，未完成，未成功
-	}
-
-	// 检查是否是当前节点持有的锁
-	acquired := lockInfo.Request.NodeID == nodeID
-
-	return acquired, lockInfo.Completed, lockInfo.Success
 }
 
 // addToQueue 添加请求到等待队列（FIFO）

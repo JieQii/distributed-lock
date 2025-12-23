@@ -107,39 +107,6 @@ func (h *Handler) Unlock(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// LockStatus 查询锁状态
-func (h *Handler) LockStatus(w http.ResponseWriter, r *http.Request) {
-	var request LockRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "无效的请求格式", http.StatusBadRequest)
-		return
-	}
-
-	// 验证请求参数
-	if request.Type == "" || request.ResourceID == "" {
-		http.Error(w, "缺少必要参数", http.StatusBadRequest)
-		return
-	}
-
-	// 获取锁状态
-	log.Printf("[LockStatus] 查询锁状态: type=%s, resource_id=%s, node_id=%s",
-		request.Type, request.ResourceID, request.NodeID)
-
-	acquired, completed, success := h.lockManager.GetLockStatus(request.Type, request.ResourceID, request.NodeID)
-
-	response := map[string]interface{}{
-		"acquired":  acquired,
-		"completed": completed,
-		"success":   success,
-	}
-
-	log.Printf("[LockStatus] 返回状态: acquired=%v, completed=%v, success=%v",
-		acquired, completed, success)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}
-
 // Subscribe 订阅资源操作完成事件（SSE）
 func (h *Handler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	// 解析查询参数
@@ -178,6 +145,5 @@ func (h *Handler) Subscribe(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/lock", h.Lock).Methods("POST")
 	router.HandleFunc("/unlock", h.Unlock).Methods("POST")
-	router.HandleFunc("/lock/status", h.LockStatus).Methods("POST")
 	router.HandleFunc("/lock/subscribe", h.Subscribe).Methods("GET")
 }

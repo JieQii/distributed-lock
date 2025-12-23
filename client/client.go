@@ -137,7 +137,7 @@ func (c *LockClient) tryLockOnce(ctx context.Context, request *Request) (*LockRe
 	}
 
 	// 如果没有获得锁，需要等待
-	// 这里使用轮询方式等待锁释放
+	// 这里使用 SSE 订阅方式等待锁释放（不是轮询）
 	return c.waitForLock(ctx, request)
 }
 
