@@ -277,32 +277,326 @@ dlv debug test-client-multi-layer.go
 3. 客户端收到响应 → 客户端停在 `tryLockOnce`
 4. 查看客户端结果：`print lockResp` → `continue`
 
-### 场景2：调试 SSE 订阅和事件广播
+### 场景2：调试 SSE 订阅和事件广播（详细流程）
+
+#### 2.1 订阅请求后的完整流程
+
+**当客户端发送订阅请求后会发生什么：**
+
+1. **客户端发送订阅请求** (`client/client.go:160`)
+   - 构建订阅 URL：`/lock/subscribe?type=pull&resource_id=sha256:xxx`
+   - 设置 SSE 请求头：`Accept: text/event-stream`
+   - 发送 GET 请求并保持连接打开
+
+2. **服务端接收订阅请求** (`server/handler.go:144`)
+   - 解析查询参数：`type` 和 `resource_id`
+   - 设置 SSE 响应头：`Content-Type: text/event-stream`
+   - 创建 `SSESubscriber` 实例
+   - 注册订阅者到 `LockManager`
+   - **保持连接打开，等待事件推送**
+
+3. **订阅者注册** (`server/lock_manager.go:277`)
+   - 将订阅者添加到对应资源的订阅者列表
+   - 订阅者列表存储在 `shard.subscribers[key]` 中
+   - 连接保持打开状态，等待后续事件
+
+4. **客户端等待事件** (`client/client.go:184`)
+   - 使用 `bufio.Scanner` 读取 SSE 流
+   - 解析 SSE 格式：`data: {json}\n\n`
+   - 等待服务端推送事件
+
+#### 2.2 验证操作成功后的广播流程
+
+**完整验证步骤：**
+
+**步骤1：设置断点**
 
 **服务端断点**：
 ```bash
-(dlv) break handler.go:148          # Subscribe
-(dlv) break lock_manager.go:275     # Subscribe（LockManager）
-(dlv) break lock_manager.go:128     # Unlock
-(dlv) break lock_manager.go:329     # broadcastEvent
+(dlv) break handler.go:148          # Subscribe 处理函数
+(dlv) break lock_manager.go:277     # Subscribe（注册订阅者）
+(dlv) break lock_manager.go:128     # Unlock（操作完成）
+(dlv) break lock_manager.go:161     # 操作成功后的广播触发点
+(dlv) break lock_manager.go:325     # broadcastEvent（广播函数）
+(dlv) break sse_subscriber.go:29    # SendEvent（发送事件给客户端）
 ```
 
 **客户端断点**：
 ```bash
-(dlv) break client/client.go:146    # waitForLock
-(dlv) break client/client.go:260     # handleOperationEvent
+(dlv) break client/client.go:160    # 创建订阅请求
+(dlv) break client/client.go:168    # 发送订阅请求
+(dlv) break client/client.go:184    # 开始读取 SSE 流
+(dlv) break client/client.go:200     # 收到事件并解析
+(dlv) break client/client.go:252     # handleOperationEvent（处理事件）
 ```
 
-**调试步骤**：
-1. 客户端订阅 → 服务端停在 `Subscribe`
-2. 查看订阅者注册：`print subscriber` → `continue`
-3. 客户端等待事件 → 客户端停在 `waitForLock`
-4. 服务端解锁 → 服务端停在 `Unlock`
-5. 查看解锁逻辑：`print request` → `continue`
-6. 服务端广播事件 → 服务端停在 `broadcastEvent`
-7. 查看事件：`print event` → `continue`
-8. 客户端收到事件 → 客户端停在 `handleOperationEvent`
-9. 查看事件内容：`print event` → `continue`
+**步骤2：启动调试**
+
+**终端1：启动服务端调试**
+```bash
+cd server
+dlv debug
+
+# 设置断点
+(dlv) break handler.go:148
+(dlv) break lock_manager.go:277
+(dlv) break lock_manager.go:128
+(dlv) break lock_manager.go:161
+(dlv) break lock_manager.go:325
+(dlv) break sse_subscriber.go:29
+
+# 运行
+(dlv) continue
+```
+
+**终端2：启动客户端调试**
+```bash
+dlv debug test-client-multi-layer.go
+
+# 设置断点
+(dlv) break client/client.go:160
+(dlv) break client/client.go:168
+(dlv) break client/client.go:184
+(dlv) break client/client.go:200
+(dlv) break client/client.go:252
+
+# 运行
+(dlv) continue
+```
+
+**步骤3：验证订阅请求流程**
+
+1. **客户端发送订阅请求**
+   - 客户端停在 `client/client.go:160`
+   - 查看订阅 URL：`print subscribeURL`
+   - 继续：`continue`
+
+2. **服务端接收订阅请求**
+   - 服务端停在 `handler.go:148`
+   - 查看请求参数：
+     ```bash
+     (dlv) print typeParam
+     (dlv) print resourceIDParam
+     ```
+   - 继续：`continue`
+
+3. **注册订阅者**
+   - 服务端停在 `lock_manager.go:277`
+   - 查看订阅者列表：
+     ```bash
+     (dlv) print key
+     (dlv) print len(shard.subscribers[key])
+     ```
+   - 继续：`continue`
+
+4. **客户端建立连接**
+   - 客户端停在 `client/client.go:168`
+   - 查看响应状态：`print resp.StatusCode`
+   - 继续：`continue`
+
+5. **客户端开始等待事件**
+   - 客户端停在 `client/client.go:184`
+   - 此时连接已建立，等待服务端推送事件
+   - 继续：`continue`（程序会在这里等待）
+
+**步骤4：触发操作并验证广播**
+
+**终端3：模拟另一个节点完成操作**
+```bash
+# 节点1获取锁并完成操作
+curl -X POST http://localhost:8086/lock \
+  -H "Content-Type: application/json" \
+  -d '{"type":"pull","resource_id":"sha256:test123","node_id":"node-1"}'
+
+# 等待一段时间（模拟操作执行）
+
+# 节点1释放锁（操作成功）
+curl -X POST http://localhost:8086/unlock \
+  -H "Content-Type: application/json" \
+  -d '{"type":"pull","resource_id":"sha256:test123","node_id":"node-1","error":""}'
+```
+
+**验证流程：**
+
+1. **服务端处理解锁请求**
+   - 服务端停在 `lock_manager.go:128`
+   - 查看解锁请求：
+     ```bash
+     (dlv) print request
+     (dlv) print request.NodeID
+     (dlv) print request.Error
+     ```
+   - 继续：`continue`
+
+2. **服务端判断操作成功**
+   - 服务端停在 `lock_manager.go:161`（操作成功分支）
+   - 查看锁状态：
+     ```bash
+     (dlv) print lockInfo.Success
+     (dlv) print lockInfo.Completed
+     ```
+   - 继续：`continue`
+
+3. **服务端触发广播**
+   - 服务端停在 `lock_manager.go:325`（broadcastEvent）
+   - 查看事件和订阅者：
+     ```bash
+     (dlv) print event
+     (dlv) print event.Success
+     (dlv) print event.NodeID
+     (dlv) print len(subscribers)
+     ```
+   - 继续：`continue`
+
+4. **服务端发送事件给订阅者**
+   - 服务端停在 `sse_subscriber.go:29`（SendEvent）
+   - 查看发送的事件：
+     ```bash
+     (dlv) print event
+     (dlv) print eventJSON
+     ```
+   - 继续：`continue`（会为每个订阅者触发一次）
+
+5. **客户端收到事件**
+   - 客户端停在 `client/client.go:200`（解析事件）
+   - 查看解析的事件：
+     ```bash
+     (dlv) print currentEventJSON
+     (dlv) print event
+     ```
+   - 继续：`continue`
+
+6. **客户端处理事件**
+   - 客户端停在 `client/client.go:252`（handleOperationEvent）
+   - 查看事件详情：
+     ```bash
+     (dlv) print event
+     (dlv) print event.Success
+     (dlv) print event.NodeID
+     (dlv) print event.ResourceID
+     ```
+   - 查看处理结果：
+     ```bash
+     (dlv) print result
+     (dlv) print done
+     ```
+   - 继续：`continue`
+
+#### 2.3 关键验证点
+
+**验证订阅者已注册：**
+```bash
+# 在服务端 Delve 中
+(dlv) break lock_manager.go:289
+(dlv) continue
+# 触发订阅后
+(dlv) print len(shard.subscribers[key])
+# 应该显示订阅者数量 > 0
+```
+
+**验证事件内容：**
+```bash
+# 在服务端 broadcastEvent 断点处
+(dlv) print event.Type
+(dlv) print event.ResourceID
+(dlv) print event.NodeID
+(dlv) print event.Success
+(dlv) print event.CompletedAt
+```
+
+**验证客户端收到事件：**
+```bash
+# 在客户端 handleOperationEvent 断点处
+(dlv) print event.Success
+# 如果 success=true，应该返回错误提示检查资源
+(dlv) print result.Error
+```
+
+#### 2.4 常见问题排查
+
+**问题1：客户端没有收到事件**
+
+**检查点**：
+1. 确认订阅者已注册：
+   ```bash
+   # 在 lock_manager.go:289 断点处
+   (dlv) print len(shard.subscribers[key])
+   ```
+2. 确认广播被触发：
+   ```bash
+   # 在 lock_manager.go:325 断点处
+   (dlv) print len(subscribers)
+   ```
+3. 确认事件发送成功：
+   ```bash
+   # 在 sse_subscriber.go:29 断点处
+   (dlv) print err
+   # 应该为 nil
+   ```
+
+**问题2：事件内容不正确**
+
+**检查点**：
+1. 在 `lock_manager.go:161` 查看创建的事件：
+   ```bash
+   (dlv) print event
+   ```
+2. 在 `sse_subscriber.go:38` 查看序列化后的 JSON：
+   ```bash
+   (dlv) print string(eventJSON)
+   ```
+
+**问题3：多个订阅者只收到部分事件**
+
+**检查点**：
+1. 在 `lock_manager.go:337` 查看循环：
+   ```bash
+   (dlv) print len(subscribers)
+   (dlv) print i
+   ```
+2. 检查每个订阅者的发送结果：
+   ```bash
+   (dlv) print err
+   ```
+
+#### 2.5 快速验证广播功能（简化版）
+
+如果你只想快速验证广播是否工作，可以使用以下简化步骤：
+
+**步骤1：设置关键断点**
+
+**服务端**：
+```bash
+(dlv) break lock_manager.go:325     # broadcastEvent
+(dlv) break sse_subscriber.go:29     # SendEvent
+```
+
+**客户端**：
+```bash
+(dlv) break client/client.go:252     # handleOperationEvent
+```
+
+**步骤2：运行并观察**
+
+1. 启动两个节点（一个获取锁，一个订阅等待）
+2. 当获取锁的节点完成操作并调用 Unlock 时：
+   - 服务端会停在 `broadcastEvent`
+   - 查看订阅者数量：`print len(subscribers)`
+   - 继续：`continue`
+3. 服务端会停在 `SendEvent`（每个订阅者一次）
+   - 查看事件：`print event`
+   - 继续：`continue`
+4. 客户端会停在 `handleOperationEvent`
+   - 查看收到的事件：`print event`
+   - 验证 `event.Success` 是否为 `true`
+   - 继续：`continue`
+
+**验证成功标志**：
+- ✅ 服务端 `broadcastEvent` 被调用
+- ✅ 订阅者数量 > 0
+- ✅ `SendEvent` 被调用（次数 = 订阅者数量）
+- ✅ 客户端 `handleOperationEvent` 被调用
+- ✅ 客户端收到的 `event.Success == true`
 
 ### 场景3：调试错误处理
 
