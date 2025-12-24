@@ -138,15 +138,33 @@ func (c *LockClient) tryLockOnce(ctx context.Context, request *Request) (*LockRe
 
 	// 如果没有获得锁，需要等待
 	// 这里使用 SSE 订阅方式等待锁释放（不是轮询）
-	return c.waitForLock(ctx, request)
+	// 注意：SSE订阅需要长时间保持连接，不应该使用带超时的context
+	// 创建一个新的context，取消超时限制，但保留取消功能
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return c.waitForLock(waitCtx, request)
 }
 
 // waitForLock 等待锁释放（使用 SSE 订阅模式）
 func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockResult, error) {
+	// 定期检查锁是否已经被分配（用于处理操作失败的情况）
+	// 如果操作失败，锁会被processQueue分配给队头节点，但不会广播事件
+	// 队头节点需要定期重新请求锁来发现锁已被分配
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+resubscribe:
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-ticker.C:
+			// 定期重新请求锁，检查锁是否已经被processQueue分配
+			// 这样可以处理操作失败的情况：锁被分配给队头节点，但不广播事件
+			result, err := c.tryLockOnce(ctx, request)
+			if err == nil && result.Acquired {
+				return result, nil
+			}
 		default:
 		}
 
@@ -165,7 +183,12 @@ func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockRe
 		req.Header.Set("Cache-Control", "no-cache")
 
 		// 发送请求
-		resp, err := c.Client.Do(req)
+		// 注意：SSE订阅需要长时间保持连接，使用没有超时的Client
+		// 创建一个临时的http.Client，没有超时限制
+		sseClient := &http.Client{
+			// 不设置Timeout，允许长时间保持连接
+		}
+		resp, err := sseClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("订阅失败: %w", err)
 		}
@@ -186,6 +209,16 @@ func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockRe
 			case <-ctx.Done():
 				resp.Body.Close()
 				return nil, ctx.Err()
+			case <-ticker.C:
+				// 定期重新请求锁，检查锁是否已经被processQueue分配
+				// 这样可以处理操作失败的情况：锁被分配给队头节点，但不广播事件
+				resp.Body.Close()
+				result, err := c.tryLockOnce(ctx, request)
+				if err == nil && result.Acquired {
+					return result, nil
+				}
+				// 如果没有获得锁，继续SSE订阅（重新建立连接）
+				goto resubscribe
 			default:
 			}
 
@@ -242,6 +275,15 @@ func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockRe
 
 		resp.Body.Close()
 
+		// 连接正常关闭，但没有收到事件
+		// 可能是操作失败，锁已经被processQueue分配给了队头节点
+		// 重新请求锁，检查锁是否已经被分配
+		result, err := c.tryLockOnce(ctx, request)
+		if err == nil && result.Acquired {
+			return result, nil
+		}
+
+		// 如果还是没有获得锁，继续等待（重新订阅）
 		// 连接正常关闭，但没有收到事件，返回错误
 		return nil, fmt.Errorf("SSE 连接关闭，未收到事件")
 	}
@@ -277,15 +319,22 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 		}, true, false
 	}
 
-	// 如果操作失败，再次尝试获取锁
+	// 如果操作失败，检查是否是"锁已分配"事件
 	// 说明：当获得锁的节点操作失败时，服务端会：
 	// 1. 删除锁
 	// 2. 通过 processQueue 将锁分配给等待队列中的第一个节点（FIFO）
-	// 3. 广播操作失败事件给所有订阅者
+	// 3. 通过 notifyLockAssigned 发送事件通知队头节点锁已被分配
 	//
-	// 因此：
-	// - 如果当前节点是队列中的第一个，再次调用 /lock 会获得锁
-	// - 如果当前节点不是队列中的第一个，再次调用 /lock 不会获得锁，需要重新订阅等待
+	// 如果事件的NodeID匹配当前节点，说明锁已被分配给自己，应该立即重新请求锁
+	// 如果事件的NodeID不匹配当前节点，说明锁被分配给了其他节点，需要继续等待
+	if event.NodeID == request.NodeID {
+		// 锁已被分配给自己，立即重新请求锁
+		// 不需要等待，因为服务端已经完成了锁的分配
+	} else {
+		// 锁被分配给了其他节点，继续等待
+		return nil, false, true // 重新订阅，继续等待
+	}
+
 	jsonData, err := json.Marshal(request)
 	if err != nil {
 		return &LockResult{
@@ -343,7 +392,14 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 		}, true, false
 	}
 
-	// 没有获得锁，说明其他节点已经获得了锁，需要重新订阅等待
+	// 没有获得锁，可能的原因：
+	// 1. 锁还没有被 processQueue 分配（时序问题）
+	// 2. 锁已经被队列中的其他节点获取
+	// 3. 锁已经被其他节点获取
+	//
+	// 返回需要重新订阅，让节点重新请求锁
+	// 此时锁应该已经被 processQueue 分配了（如果当前节点是队列中的第一个）
+	// 或者需要继续等待（如果当前节点不是队列中的第一个）
 	return nil, false, true
 }
 

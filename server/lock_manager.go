@@ -3,6 +3,7 @@ package server
 import (
 	"hash/fnv"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -86,7 +87,10 @@ func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 			} else {
 				// 操作已完成但失败：清理锁并分配锁给队列中的下一个节点，让它继续尝试
 				log.Printf("[TryLock] 操作已完成但失败: key=%s, 处理队列", key)
-				lm.processQueue(shard, key)
+				nextNodeID := lm.processQueue(shard, key)
+				if nextNodeID != "" {
+					lm.notifyLockAssigned(shard, key, nextNodeID)
+				}
 			}
 			delete(shard.locks, key)
 			// 3. 立即释放分段锁
@@ -187,17 +191,13 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 		// 操作失败：删除锁并分配锁给队列中的下一个节点，让它继续尝试
 		log.Printf("[Unlock] 操作失败，唤醒队列: key=%s, node=%s", key, request.NodeID)
 		delete(shard.locks, key)
-		lm.processQueue(shard, key)
+		nextNodeID := lm.processQueue(shard, key)
 
-		// 触发订阅消息广播（操作失败）
-		lm.broadcastEvent(shard, key, &OperationEvent{
-			Type:        request.Type,
-			ResourceID:  request.ResourceID,
-			NodeID:      request.NodeID,
-			Success:     false,
-			Error:       request.Error,
-			CompletedAt: lockInfo.CompletedAt,
-		})
+		// 如果成功分配锁给队头节点，通过SSE通知队头节点锁已被分配
+		// 这样队头节点可以立即重新请求锁，而不需要等待定期检查
+		if nextNodeID != "" {
+			lm.notifyLockAssigned(shard, key, nextNodeID)
+		}
 	}
 
 	return true
@@ -214,10 +214,11 @@ func (lm *LockManager) addToQueue(shard *resourceShard, key string, request *Loc
 
 // processQueue 处理等待队列（FIFO）
 // 注意：调用此函数时，shard.mu 必须已经加锁
-func (lm *LockManager) processQueue(shard *resourceShard, key string) {
+// 返回：分配锁的节点ID，如果没有队列则返回空字符串
+func (lm *LockManager) processQueue(shard *resourceShard, key string) string {
 	queue, exists := shard.queues[key]
 	if !exists || len(queue) == 0 {
-		return
+		return ""
 	}
 
 	// FIFO：取出队列中的第一个请求
@@ -239,6 +240,8 @@ func (lm *LockManager) processQueue(shard *resourceShard, key string) {
 		Completed:  false,
 		Success:    false,
 	}
+
+	return nextRequest.NodeID
 }
 
 // GetQueueLength 获取队列长度（用于监控）
@@ -332,6 +335,57 @@ func (lm *LockManager) broadcastEvent(shard *resourceShard, key string, event *O
 	for _, sub := range subscribers {
 		if err := sub.SendEvent(event); err != nil {
 			log.Printf("[BroadcastEvent] 发送事件失败，移除订阅者: key=%s, error=%v", key, err)
+			sub.Close()
+		} else {
+			validSubscribers = append(validSubscribers, sub)
+		}
+	}
+
+	// 更新订阅者列表
+	if len(validSubscribers) == 0 {
+		delete(shard.subscribers, key)
+	} else {
+		shard.subscribers[key] = validSubscribers
+	}
+}
+
+// notifyLockAssigned 通知队头节点锁已被分配
+// 注意：调用此函数时，shard.mu 必须已经加锁
+func (lm *LockManager) notifyLockAssigned(shard *resourceShard, key string, nodeID string) {
+	subscribers, exists := shard.subscribers[key]
+	if !exists || len(subscribers) == 0 {
+		return
+	}
+
+	// 解析key获取type和resourceID
+	parts := strings.Split(key, ":")
+	if len(parts) < 2 {
+		return
+	}
+	lockType := parts[0]
+	resourceID := strings.Join(parts[1:], ":")
+
+	// 创建"锁已分配"事件
+	// 注意：Success=false 表示操作失败，但通过NodeID匹配，客户端可以知道锁已被分配给自己
+	event := &OperationEvent{
+		Type:        lockType,
+		ResourceID:  resourceID,
+		NodeID:      nodeID, // 队头节点的NodeID
+		Success:     false,  // 操作失败
+		Error:       "",     // 没有错误，只是通知锁已分配
+		CompletedAt: time.Now(),
+	}
+
+	log.Printf("[notifyLockAssigned] 通知队头节点锁已分配: key=%s, node=%s, 订阅者数量=%d",
+		key, nodeID, len(subscribers))
+
+	// 发送事件给所有订阅者
+	// 客户端收到事件后，检查NodeID是否匹配，如果匹配则重新请求锁
+	validSubscribers := make([]Subscriber, 0, len(subscribers))
+
+	for _, sub := range subscribers {
+		if err := sub.SendEvent(event); err != nil {
+			log.Printf("[notifyLockAssigned] 发送事件失败，移除订阅者: key=%s, error=%v", key, err)
 			sub.Close()
 		} else {
 			validSubscribers = append(validSubscribers, sub)
