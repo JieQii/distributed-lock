@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,9 +16,10 @@ import (
 
 // LockClient 分布式锁客户端
 type LockClient struct {
-	ServerURL string       // 锁服务端地址
-	Client    *http.Client // HTTP客户端
-	NodeID    string       // 当前节点ID
+	ServerURL   string       // 锁服务端地址
+	ShortClient *http.Client // 短连接客户端（用于普通HTTP请求，有超时）
+	LongClient  *http.Client // 长连接客户端（用于SSE订阅和镜像操作，无超时）
+	NodeID      string       // 当前节点ID
 
 	// 重试配置
 	MaxRetries     int           // 最大重试次数（默认3次）
@@ -29,8 +31,11 @@ type LockClient struct {
 func NewLockClient(serverURL, nodeID string) *LockClient {
 	return &LockClient{
 		ServerURL: serverURL,
-		Client: &http.Client{
-			Timeout: 30 * time.Second,
+		ShortClient: &http.Client{
+			Timeout: 30 * time.Second, // 短连接设置超时
+		},
+		LongClient: &http.Client{
+			// 长连接不设置超时，用于SSE订阅和镜像操作（下载时间可能很长）
 		},
 		NodeID:         nodeID,
 		MaxRetries:     3,
@@ -78,25 +83,23 @@ func (c *LockClient) tryLockOnce(ctx context.Context, request *Request) (*LockRe
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	// 创建带超时的context
-	reqCtx, cancel := context.WithTimeout(ctx, c.RequestTimeout)
-	defer cancel()
-
-	// 创建HTTP请求
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.ServerURL+"/lock", bytes.NewBuffer(jsonData))
+	// 创建HTTP请求（使用传入的context，可以响应上层取消）
+	// 超时由 ShortClient.Timeout 控制
+	req, err := http.NewRequestWithContext(ctx, "POST", c.ServerURL+"/lock", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// 发送请求并等待响应
-	resp, err := c.Client.Do(req)
+	// 发送请求并等待响应（使用短连接客户端，有超时）
+	resp, err := c.ShortClient.Do(req)
 	if err != nil {
-		// 检查是否是超时或连接错误
-		if reqCtx.Err() == context.DeadlineExceeded {
+		// 注意：ShortClient.Timeout 触发时，err 会是 url.Error{Op: "Get", Err: context.DeadlineExceeded}
+		// 所以我们直接判断 err 即可，不需要手动 WithTimeout
+		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("请求超时: %w", err)
 		}
-		if reqCtx.Err() == context.Canceled {
+		if errors.Is(err, context.Canceled) {
 			return nil, fmt.Errorf("请求被取消: %w", err)
 		}
 		return nil, fmt.Errorf("发送请求失败: %w", err)
@@ -182,13 +185,9 @@ resubscribe:
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("Cache-Control", "no-cache")
 
-		// 发送请求
-		// 注意：SSE订阅需要长时间保持连接，使用没有超时的Client
-		// 创建一个临时的http.Client，没有超时限制
-		sseClient := &http.Client{
-			// 不设置Timeout，允许长时间保持连接
-		}
-		resp, err := sseClient.Do(req)
+		// 发送请求（使用长连接客户端，无超时限制）
+		// 注意：SSE订阅需要长时间保持连接，用于镜像操作时下载时间可能很长
+		resp, err := c.LongClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("订阅失败: %w", err)
 		}
@@ -352,7 +351,8 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.Client.Do(req)
+	// 使用短连接客户端（有超时）
+	resp, err := c.ShortClient.Do(req)
 	if err != nil {
 		return &LockResult{
 			Acquired: false,
@@ -474,25 +474,23 @@ func (c *LockClient) tryUnlockOnce(ctx context.Context, request *Request) error 
 		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	// 创建带超时的context
-	reqCtx, cancel := context.WithTimeout(ctx, c.RequestTimeout)
-	defer cancel()
-
-	// 创建HTTP请求
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.ServerURL+"/unlock", bytes.NewBuffer(jsonData))
+	// 创建HTTP请求（使用传入的context，可以响应上层取消）
+	// 超时由 ShortClient.Timeout 控制
+	req, err := http.NewRequestWithContext(ctx, "POST", c.ServerURL+"/unlock", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("创建请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// 发送请求
-	resp, err := c.Client.Do(req)
+	// 发送请求（使用短连接客户端，有超时）
+	resp, err := c.ShortClient.Do(req)
 	if err != nil {
-		// 检查是否是超时或连接错误
-		if reqCtx.Err() == context.DeadlineExceeded {
+		// 注意：ShortClient.Timeout 触发时，err 会是 url.Error{Op: "Get", Err: context.DeadlineExceeded}
+		// 所以我们直接判断 err 即可，不需要手动 WithTimeout
+		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("请求超时: %w", err)
 		}
-		if reqCtx.Err() == context.Canceled {
+		if errors.Is(err, context.Canceled) {
 			return fmt.Errorf("请求被取消: %w", err)
 		}
 		return fmt.Errorf("发送请求失败: %w", err)

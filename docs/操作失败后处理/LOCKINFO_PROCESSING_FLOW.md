@@ -95,37 +95,35 @@ type resourceShard struct {
 
 ### 4. 客户端如何发现锁已被分配
 
-#### 方式1：定期检查（每秒）
+#### 方式1：SSE订阅等待事件（之前的代码）
 
-**位置**：`client/client.go:148-169`（之前的代码）
+**注意**：之前的代码中，`waitForLock` **没有定期检查（ticker）**，只通过 SSE 订阅等待事件。
+
+**位置**：`client/client.go:148-290`（之前的代码）
 
 ```go
 func (c *LockClient) waitForLock(ctx context.Context, request *Request) (*LockResult, error) {
-    ticker := time.NewTicker(1 * time.Second)  // 每秒检查一次
-    defer ticker.Stop()
-
-    for {
-        select {
-        case <-ctx.Done():
-            return nil, ctx.Err()
-        case <-ticker.C:
-            // 定期重新请求锁，检查锁是否已经被processQueue分配
-            result, err := c.tryLockOnce(ctx, request)
-            if err == nil && result.Acquired {
-                return result, nil  // 获得锁，返回
-            }
+    // 构建订阅 URL
+    subscribeURL := fmt.Sprintf("%s/lock/subscribe?type=%s&resource_id=%s", ...)
+    
+    // 建立 SSE 订阅连接
+    resp, err := sseClient.Do(req)
+    
+    // 读取 SSE 流
+    scanner := bufio.NewScanner(resp.Body)
+    for scanner.Scan() {
+        // 解析事件
+        var event OperationEvent
+        json.Unmarshal([]byte(currentEventJSON), &event)
+        
+        // 处理事件
+        result, done, needResubscribe := c.handleOperationEvent(ctx, request, &event)
+        if done {
+            return result, nil
         }
-        // ... SSE订阅逻辑
     }
 }
 ```
-
-**流程**：
-1. 客户端每秒调用 `tryLockOnce`（发送 `/lock` 请求）
-2. 服务端 `TryLock` 检查 `shard.locks[key]` 是否存在
-3. 如果存在且 `NodeID` 匹配，返回 `acquired=true`
-
-#### 方式2：SSE订阅等待事件（之前的代码）
 
 **位置**：`client/client.go:292-400`（之前的代码）
 
@@ -159,11 +157,14 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 ```
 
 **流程**：
-1. 客户端收到操作失败事件（通过SSE）
-2. 等待100ms，确保服务端的 `processQueue` 已经完成锁的分配
-3. 重新请求锁（调用 `/lock`）
-4. 服务端 `TryLock` 检查 `shard.locks[key]` 是否存在
-5. 如果存在且 `NodeID` 匹配，返回 `acquired=true`
+1. 客户端建立 SSE 订阅连接，等待事件
+2. 服务端广播操作失败事件（之前的代码会广播）
+3. 客户端收到操作失败事件（通过SSE）
+4. `handleOperationEvent` 处理失败事件：
+   - 等待100ms，确保服务端的 `processQueue` 已经完成锁的分配
+   - 重新请求锁（调用 `/lock`）
+5. 服务端 `TryLock` 检查 `shard.locks[key]` 是否存在
+6. 如果存在且 `NodeID` 匹配，返回 `acquired=true`
 
 ### 5. TryLock 如何处理 LockInfo
 
@@ -227,29 +228,7 @@ T5: 节点B获得锁，继续操作
     → 节点B开始执行操作
 ```
 
-### 或者：节点B通过定期检查发现锁已被分配
-
-```
-T1: 节点A操作失败，调用Unlock
-    → 服务端删除锁：delete(shard.locks, key)
-    → 服务端调用processQueue：
-       - 创建LockInfo：shard.locks[key] = &LockInfo{Request: 节点B的请求, ...}
-       - ✅ LockInfo 存储在 shard.locks[key] 中
-    
-T2: 节点B在waitForLock中等待（SSE订阅中）
-    → 定期检查（每秒）：调用 tryLockOnce
-    
-T3: 节点B调用 /lock（定期检查）
-    → TryLock检查 shard.locks[key] 是否存在
-    → ✅ LockInfo存在，检查 lockInfo.Request.NodeID == request.NodeID
-    → ✅ NodeID匹配（都是节点B）
-    → 更新LockInfo：lockInfo.Request = request（使用最新的请求）
-    → ✅ 返回 true（获得锁）
-    
-T4: 节点B获得锁，继续操作
-    → 返回 LockResult{Acquired: true}
-    → 节点B开始执行操作
-```
+**注意**：之前的代码中，客户端**只通过SSE订阅等待事件**，没有定期检查的逻辑。
 
 ## LockInfo 的生命周期
 
@@ -325,8 +304,8 @@ TryLock 检查 LockInfo
 
 ### 2. LockInfo 的发现
 
-- ✅ **方式1**：定期检查（每秒调用 `/lock`）
-- ✅ **方式2**：SSE订阅等待事件（收到失败事件后重新请求锁）
+- ✅ **方式**：SSE订阅等待事件（收到失败事件后重新请求锁）
+- ❌ **之前的代码没有定期检查**：客户端只通过SSE订阅等待事件
 
 ### 3. LockInfo 的处理
 
