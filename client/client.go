@@ -297,14 +297,6 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 		return nil, false, false
 	}
 
-	// 检查是否有错误
-	if event.Error != "" {
-		return &LockResult{
-			Acquired: false,
-			Error:    fmt.Errorf("%s", event.Error),
-		}, true, false
-	}
-
 	// 如果操作成功，说明其他节点已完成操作
 	// 注意：上层已经检查过资源是否存在，如果资源已存在就不会请求锁
 	// 所以这里不需要返回 Skipped，直接返回错误让上层处理
@@ -324,11 +316,15 @@ func (c *LockClient) handleOperationEvent(ctx context.Context, request *Request,
 	// 2. 通过 processQueue 将锁分配给等待队列中的第一个节点（FIFO）
 	// 3. 通过 notifyLockAssigned 发送事件通知队头节点锁已被分配
 	//
+	// 注意：即使 event.Error 不为空，也不应该直接返回 Acquired: false
+	// 因为操作失败时，锁会被重新分配给队头节点，队头节点应该重新请求锁
+	//
 	// 如果事件的NodeID匹配当前节点，说明锁已被分配给自己，应该立即重新请求锁
 	// 如果事件的NodeID不匹配当前节点，说明锁被分配给了其他节点，需要继续等待
 	if event.NodeID == request.NodeID {
 		// 锁已被分配给自己，立即重新请求锁
 		// 不需要等待，因为服务端已经完成了锁的分配
+		// 注意：即使 event.Error 不为空，也要重新请求锁，因为锁已经被分配给自己了
 	} else {
 		// 锁被分配给了其他节点，继续等待
 		return nil, false, true // 重新订阅，继续等待

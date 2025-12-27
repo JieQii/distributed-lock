@@ -59,10 +59,12 @@ func NewLockManager() *LockManager {
 // TryLock 尝试获取锁
 // 仲裁逻辑：
 // 1. 检查是否有其他节点在操作（锁是否被占用）
-// 2. 检查引用计数是否符合预期（判断操作是否已完成但还没刷新mergerfs）
-//   - Pull: 预期refcount != 0 时跳过（已下载完成）
-//   - Delete: 预期refcount == 0 时跳过（已删除完成）
-//   - Update: 根据配置决定
+// 2. 如果锁被占用，检查是否是同一节点重新请求（队列场景）
+// 3. 如果锁未被占用，创建新的资源锁
+//
+// 注意：引用计数检查应该在客户端进行（ShouldSkipOperation），
+// 服务端只负责锁的分配和队列管理，不检查引用计数。
+// 客户端在请求锁之前应该先检查本地引用计数，如果资源已存在，不应该请求锁。
 //
 // 返回：是否获得锁，是否操作已完成且成功（需要跳过操作），错误信息
 func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
