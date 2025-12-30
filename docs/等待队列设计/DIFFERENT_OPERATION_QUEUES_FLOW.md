@@ -87,7 +87,7 @@ flowchart TD
 ```mermaid
 graph TB
     subgraph Shard["resourceShard (分段)"]
-        Queues[queues: map[string][]*LockRequest]
+        Queues["queues: map[string][]*LockRequest"]
     end
     
     subgraph QueuePull["pull:resource123 队列"]
@@ -379,5 +379,6 @@ T4: 节点B收到SSE事件 → 检查资源 → 资源存在 → 跳过操作
 - ⚠️ 操作成功时，不处理队列（资源已存在）
 - ⚠️ 操作失败时，只处理相同操作类型的队列
 - ⚠️ 队列中的节点通过SSE收到事件后，会重新检查资源
+
 
 
