@@ -16,15 +16,22 @@ const (
 
 // resourceShard 资源分段，每个分段有自己的锁和数据结构
 type resourceShard struct {
-	mu sync.RWMutex
+	mu sync.RWMutex // 分段锁，保护资源锁的创建和访问
 
-	// 当前持有的锁：resourceID -> LockInfo
+	// 资源锁（物理锁）：key -> Mutex
+	// key = lockType:resourceID，每个资源一个真实的互斥锁
+	resourceLocks map[string]*sync.Mutex
+
+	// 锁状态：key -> LockInfo
+	// key = lockType:resourceID，存储锁的状态信息
 	locks map[string]*LockInfo
 
-	// 等待队列：resourceID -> []*LockRequest (FIFO队列)
+	// 等待队列：key -> []*LockRequest (FIFO队列)
+	// key = lockType:resourceID，不同操作类型不同队列
 	queues map[string][]*LockRequest
 
-	// 订阅者：resourceID -> []Subscriber
+	// 订阅者：key -> []Subscriber
+	// key = lockType:resourceID
 	subscribers map[string][]Subscriber
 }
 
@@ -32,25 +39,38 @@ type resourceShard struct {
 // 使用分段锁提升并发度：不同资源可以并发访问，只有相同分段的资源才会竞争
 type LockManager struct {
 	shards [shardCount]*resourceShard
+
+	// AllowMultiNodeDownload 是否允许多节点下载模式
+	// true:  允许多节点下载，锁被占用时加入等待队列
+	// false: 禁止多节点下载，锁被占用时直接返回失败
+	AllowMultiNodeDownload bool
 }
 
-// getShard 根据key获取对应的分段
-func (lm *LockManager) getShard(key string) *resourceShard {
+// getShard 根据resourceID获取对应的分段
+// 注意：分段只根据resourceID，不包含操作类型，确保同一镜像层的所有操作类型互斥
+func (lm *LockManager) getShard(resourceID string) *resourceShard {
 	// 使用FNV-1a哈希算法计算分段索引
+	// 只对resourceID进行哈希，确保同一镜像层的所有操作类型（pull、update、delete）分到同一个分段
 	h := fnv.New32a()
-	h.Write([]byte(key))
+	h.Write([]byte(resourceID))
 	return lm.shards[h.Sum32()%shardCount]
 }
 
 // NewLockManager 创建新的锁管理器
-func NewLockManager() *LockManager {
-	lm := &LockManager{}
+// allowMultiNodeDownload: 是否允许多节点下载模式
+//   - true:  允许多节点下载，锁被占用时加入等待队列
+//   - false: 禁止多节点下载，锁被占用时直接返回失败
+func NewLockManager(allowMultiNodeDownload bool) *LockManager {
+	lm := &LockManager{
+		AllowMultiNodeDownload: allowMultiNodeDownload,
+	}
 	// 初始化所有分段
 	for i := 0; i < shardCount; i++ {
 		lm.shards[i] = &resourceShard{
-			locks:       make(map[string]*LockInfo),
-			queues:      make(map[string][]*LockRequest),
-			subscribers: make(map[string][]Subscriber),
+			resourceLocks: make(map[string]*sync.Mutex), // 资源锁（物理锁）
+			locks:         make(map[string]*LockInfo),
+			queues:        make(map[string][]*LockRequest),
+			subscribers:   make(map[string][]Subscriber),
 		}
 	}
 	return lm
@@ -69,82 +89,120 @@ func NewLockManager() *LockManager {
 // 返回：是否获得锁，是否操作已完成且成功（需要跳过操作），错误信息
 func (lm *LockManager) TryLock(request *LockRequest) (bool, bool, string) {
 	key := LockKey(request.Type, request.ResourceID)
-	shard := lm.getShard(key) // 获取对应的分段
-
-	// 1. 获取分段锁
-	shard.mu.Lock()
+	shard := lm.getShard(request.ResourceID) // 获取对应的分段（只根据resourceID分段，确保同一镜像层的所有操作类型互斥）
 
 	request.Timestamp = time.Now()
 
-	// 2. 检查资源锁是否存在
-	if lockInfo, exists := shard.locks[key]; exists {
-		// 资源锁存在
-		// 如果操作已完成（这种情况不应该发生，因为操作成功时锁已被删除）
-		// 但为了兼容性和处理操作失败的情况，保留这个检查
+	// ========== 阶段1：获取分段锁，检查/创建资源锁 ==========
+	shard.mu.Lock()
+
+	var resourceLock *sync.Mutex
+	if existingLock, exists := shard.resourceLocks[key]; exists {
+		// 资源锁存在：获取引用，立即释放分段锁
+		resourceLock = existingLock
+		shard.mu.Unlock()
+	} else {
+		// 资源锁不存在：创建资源锁，加入map，释放分段锁
+		resourceLock = &sync.Mutex{}
+		shard.resourceLocks[key] = resourceLock
+		shard.mu.Unlock()
+	}
+
+	// ========== 阶段2：获取资源锁 ==========
+	resourceLock.Lock()
+	defer resourceLock.Unlock()
+
+	// ========== 阶段3：重新获取分段锁访问locks map ==========
+	shard.mu.RLock()
+	lockInfo, exists := shard.locks[key]
+	shard.mu.RUnlock()
+
+	// ========== 阶段4：根据检查结果处理 ==========
+	if exists {
+		// 锁已存在
 		if lockInfo.Completed {
-			// 操作已完成：清理锁
+			// 操作已完成（不应该发生，但保留检查）
 			if lockInfo.Success {
 				// 操作成功时锁应该已经被删除，这种情况不应该发生
 				log.Printf("[TryLock] 操作已完成且成功: key=%s, 清理锁（不应该发生）", key)
 			} else {
-				// 操作已完成但失败：清理锁并分配锁给队列中的下一个节点，让它继续尝试
+				// 操作已完成但失败：清理锁并分配锁给队列中的下一个节点
 				log.Printf("[TryLock] 操作已完成但失败: key=%s, 处理队列", key)
+				shard.mu.Lock()
 				nextNodeID := lm.processQueue(shard, key)
+				shard.mu.Unlock()
 				if nextNodeID != "" {
+					shard.mu.Lock()
 					lm.notifyLockAssigned(shard, key, nextNodeID)
+					shard.mu.Unlock()
 				}
 			}
+			shard.mu.Lock()
 			delete(shard.locks, key)
-			// 3. 立即释放分段锁
 			shard.mu.Unlock()
-			// 返回 acquired=false, skip=false，让客户端继续等待或重试
 			return false, false, ""
 		} else {
 			// 锁被占用但操作未完成
-			// 如果当前请求的节点就是锁的持有者（可能是队列中的旧请求被分配了锁，现在客户端重新请求）
 			if lockInfo.Request.NodeID == request.NodeID {
-				// 注意：这里允许同一节点获取锁，但实际使用中，客户端应该在请求锁之前
-				// 先检查引用计数（ShouldSkipOperation），如果资源已存在，不应该请求锁
-				// 这个逻辑主要用于处理队列场景：队列中的旧请求被分配锁后，客户端通过轮询重新请求
-				// 更新锁的请求信息（使用最新的请求）
+				// 同一节点重新请求（队列场景）
 				log.Printf("[TryLock] 同一节点重新请求: key=%s, node=%s, 更新锁信息",
 					key, request.NodeID)
+				shard.mu.Lock()
 				lockInfo.Request = request
 				lockInfo.AcquiredAt = time.Now()
-				// 3. 立即释放分段锁
 				shard.mu.Unlock()
 				return true, false, ""
+			} else {
+				// 其他节点持有锁
+				if !lm.AllowMultiNodeDownload {
+					// 多节点下载模式关闭：直接返回失败，不加入队列
+					log.Printf("[TryLock] 多节点下载已关闭，锁被占用: key=%s, node=%s, 当前持有者=%s",
+						key, request.NodeID, lockInfo.Request.NodeID)
+					return false, false, "多节点下载模式已关闭，锁已被其他节点占用"
+				}
+				// 多节点下载模式开启：加入等待队列
+				log.Printf("[TryLock] 加入等待队列: key=%s, node=%s, 当前持有者=%s",
+					key, request.NodeID, lockInfo.Request.NodeID)
+				shard.mu.Lock()
+				lm.addToQueue(shard, key, request)
+				shard.mu.Unlock()
+				return false, false, ""
 			}
-			// 其他节点持有锁，加入等待队列
-			log.Printf("[TryLock] 加入等待队列: key=%s, node=%s, 当前持有者=%s",
-				key, request.NodeID, lockInfo.Request.NodeID)
-			lm.addToQueue(shard, key, request)
-			// 3. 立即释放分段锁
-			shard.mu.Unlock()
-			return false, false, ""
 		}
+	} else {
+		// 锁不存在，创建新的资源锁
+		log.Printf("[TryLock] 直接获取锁成功: key=%s, node=%s", key, request.NodeID)
+		shard.mu.Lock()
+		shard.locks[key] = &LockInfo{
+			Request:    request,
+			AcquiredAt: time.Now(),
+			Completed:  false,
+			Success:    false,
+		}
+		shard.mu.Unlock()
+		return true, false, ""
 	}
-
-	// 资源锁不存在，创建新的资源锁
-	log.Printf("[TryLock] 直接获取锁成功: key=%s, node=%s", key, request.NodeID)
-	shard.locks[key] = &LockInfo{
-		Request:    request,
-		AcquiredAt: time.Now(),
-		Completed:  false,
-		Success:    false,
-	}
-
-	// 4. 立即释放分段锁
-	shard.mu.Unlock()
-
-	return true, false, ""
 }
 
 // Unlock 释放锁
 func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 	key := LockKey(request.Type, request.ResourceID)
-	shard := lm.getShard(key) // 获取对应的分段
+	shard := lm.getShard(request.ResourceID) // 获取对应的分段（只根据resourceID分段，确保同一镜像层的所有操作类型互斥）
 
+	// ========== 阶段1：获取分段锁，获取资源锁引用 ==========
+	shard.mu.Lock()
+	resourceLock, exists := shard.resourceLocks[key]
+	shard.mu.Unlock()
+
+	if !exists {
+		return false
+	}
+
+	// ========== 阶段2：获取资源锁 ==========
+	resourceLock.Lock()
+	defer resourceLock.Unlock()
+
+	// ========== 阶段3：重新获取分段锁访问locks map ==========
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
@@ -166,10 +224,7 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 	lockInfo.CompletedAt = time.Now()
 
 	if lockInfo.Success {
-		// 操作成功：直接释放锁
-		// 等待的节点通过SSE订阅已经收到事件，不需要保留锁
-		// 如果资源已存在，客户端不会请求锁（请求前会检查）
-		// 如果资源不存在，客户端会重新请求锁（此时锁已被清理，可以重新获取）
+		// ========== 操作成功：删除锁和资源锁 ==========
 		log.Printf("[Unlock] 操作成功，释放锁: key=%s, node=%s", key, request.NodeID)
 
 		// 触发订阅消息广播（在删除锁之前，确保订阅者能收到事件）
@@ -182,24 +237,30 @@ func (lm *LockManager) Unlock(request *UnlockRequest) bool {
 			CompletedAt: lockInfo.CompletedAt,
 		})
 
-		// 删除锁，避免内存泄漏
+		// 删除锁和资源锁
 		delete(shard.locks, key)
+		delete(shard.resourceLocks, key)
 
 		// 注意：不调用 processQueue，因为：
 		// 1. 操作成功，资源已存在，队列中的节点不应该继续操作
 		// 2. 队列中的节点通过SSE收到事件后，会重新检查资源
 		// 3. 如果资源存在，不会请求锁；如果资源不存在，会重新请求锁（此时锁已被清理）
 	} else {
-		// 操作失败：删除锁并分配锁给队列中的下一个节点，让它继续尝试
+		// ========== 操作失败：保留资源锁，分配锁给队列中的下一个节点 ==========
 		log.Printf("[Unlock] 操作失败，唤醒队列: key=%s, node=%s", key, request.NodeID)
+
+		// 删除锁状态（但保留资源锁）
 		delete(shard.locks, key)
+
+		// 分配锁给队列中的下一个节点
 		nextNodeID := lm.processQueue(shard, key)
 
-		// 如果成功分配锁给队头节点，通过SSE通知队头节点锁已被分配
-		// 这样队头节点可以立即重新请求锁，而不需要等待定期检查
+		// 通过SSE通知队头节点锁已被分配
 		if nextNodeID != "" {
 			lm.notifyLockAssigned(shard, key, nextNodeID)
 		}
+
+		// 注意：资源锁保留，下一个节点使用同一个资源锁
 	}
 
 	return true
@@ -249,7 +310,7 @@ func (lm *LockManager) processQueue(shard *resourceShard, key string) string {
 // GetQueueLength 获取队列长度（用于监控）
 func (lm *LockManager) GetQueueLength(lockType, resourceID string) int {
 	key := LockKey(lockType, resourceID)
-	shard := lm.getShard(key)
+	shard := lm.getShard(resourceID) // 获取对应的分段（只根据resourceID分段）
 
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
@@ -264,7 +325,7 @@ func (lm *LockManager) GetQueueLength(lockType, resourceID string) int {
 // GetLockInfo 获取锁信息（用于调试和监控）
 func (lm *LockManager) GetLockInfo(lockType, resourceID string) *LockInfo {
 	key := LockKey(lockType, resourceID)
-	shard := lm.getShard(key)
+	shard := lm.getShard(resourceID) // 获取对应的分段（只根据resourceID分段）
 
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
@@ -276,7 +337,7 @@ func (lm *LockManager) GetLockInfo(lockType, resourceID string) *LockInfo {
 // 返回订阅者ID（用于取消订阅）
 func (lm *LockManager) Subscribe(lockType, resourceID string, subscriber Subscriber) string {
 	key := LockKey(lockType, resourceID)
-	shard := lm.getShard(key)
+	shard := lm.getShard(resourceID) // 获取对应的分段（只根据resourceID分段）
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
@@ -295,7 +356,7 @@ func (lm *LockManager) Subscribe(lockType, resourceID string, subscriber Subscri
 // Unsubscribe 取消订阅
 func (lm *LockManager) Unsubscribe(lockType, resourceID string, subscriber Subscriber) {
 	key := LockKey(lockType, resourceID)
-	shard := lm.getShard(key)
+	shard := lm.getShard(resourceID) // 获取对应的分段（只根据resourceID分段）
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()

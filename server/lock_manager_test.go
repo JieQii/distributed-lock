@@ -8,7 +8,7 @@ import (
 
 // TestConcurrentPullOperations 测试并发pull操作的互斥与队列
 func TestConcurrentPullOperations(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 	concurrency := 10
 
@@ -68,7 +68,7 @@ func TestConcurrentPullOperations(t *testing.T) {
 
 // TestPullSkipWhenRefCountNotZero 现在期望后续节点排队并获得锁（不依赖引用计数）
 func TestPullSkipWhenRefCountNotZero(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 
 	// 先执行pull操作，增加引用计数
@@ -111,7 +111,7 @@ func TestPullSkipWhenRefCountNotZero(t *testing.T) {
 
 // TestDeleteWithReferences 现在删除不依赖引用计数，期望仍可获取锁
 func TestDeleteWithReferences(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 
 	// 先执行pull操作，增加引用计数
@@ -154,7 +154,7 @@ func TestDeleteWithReferences(t *testing.T) {
 
 // TestDeleteWithoutReferences 删除流程，完成后队列应正常推进
 func TestDeleteWithoutReferences(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 
 	// 尝试删除（应该成功，因为没有引用）
@@ -189,7 +189,7 @@ func TestDeleteWithoutReferences(t *testing.T) {
 // 注意：当前实现中，如果refcount == 0且没有锁，仍然允许获取锁执行delete
 // 这是为了处理资源不存在的情况
 func TestDeleteWhenRefCountZero(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 
 	// refcount == 0，尝试删除（应该可以获取锁，因为资源可能不存在）
@@ -221,7 +221,7 @@ func TestDeleteWhenRefCountZero(t *testing.T) {
 
 // TestUpdateWithReferences 现在服务端不关注引用计数，期望正常获得锁
 func TestUpdateWithReferences(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 
 	// 先执行pull操作，增加引用计数
@@ -263,7 +263,7 @@ func TestUpdateWithReferences(t *testing.T) {
 
 // TestUpdateWithoutReferencesRequired 配置已移除，期望正常获得锁
 func TestUpdateWithoutReferencesRequired(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 
 	// 先执行pull操作，增加引用计数
@@ -305,7 +305,7 @@ func TestUpdateWithoutReferencesRequired(t *testing.T) {
 
 // TestFIFOQueue 测试FIFO队列
 func TestFIFOQueue(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 
 	// 第一个请求获取锁
@@ -367,7 +367,7 @@ func TestFIFOQueue(t *testing.T) {
 
 // TestConcurrentDifferentResources 测试不同资源的并发操作
 func TestConcurrentDifferentResources(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resource1 := "sha256:resource1"
 	resource2 := "sha256:resource2"
 
@@ -451,7 +451,7 @@ func TestConcurrentDifferentResources(t *testing.T) {
 // 3. 节点B再收到其他资源的请求（layer2）
 // 4. 节点B应该能够并发下载layer2（即使layer1还在等待）
 func TestNodeConcurrentDifferentResources(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	layer1 := "sha256:layer1"
 	layer2 := "sha256:layer2"
 	nodeA := "NODEA"
@@ -566,7 +566,7 @@ func TestNodeConcurrentDifferentResources(t *testing.T) {
 // TestReferenceCountAccuracy 测试引用计数准确性
 // 现在的设计：服务端不再基于引用计数跳过操作，后续节点应正常排队获取锁
 func TestReferenceCountAccuracy(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	resourceID := "sha256:test123"
 
 	// 第一个节点执行pull操作

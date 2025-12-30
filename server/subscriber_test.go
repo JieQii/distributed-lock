@@ -15,7 +15,7 @@ import (
 
 // TestSubscriberPattern 测试订阅者模式
 func TestSubscriberPattern(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	handler := NewHandler(lm)
 
 	// 创建测试服务器
@@ -130,7 +130,7 @@ func TestSubscriberPattern(t *testing.T) {
 
 // TestMultipleSubscribers 测试多个订阅者
 func TestMultipleSubscribers(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	handler := NewHandler(lm)
 
 	muxRouter := mux.NewRouter()
@@ -216,7 +216,7 @@ func TestMultipleSubscribers(t *testing.T) {
 
 // TestSubscriberHTTPEndpoint 测试 HTTP 订阅端点
 func TestSubscriberHTTPEndpoint(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 	handler := NewHandler(lm)
 
 	muxRouter := mux.NewRouter()
@@ -266,7 +266,7 @@ func TestSubscriberHTTPEndpoint(t *testing.T) {
 
 // TestSubscriberUnsubscribe 测试取消订阅
 func TestSubscriberUnsubscribe(t *testing.T) {
-	lm := NewLockManager()
+	lm := NewLockManager(true)
 
 	resourceID := "sha256:test999"
 	lockType := OperationTypePull

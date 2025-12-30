@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分布式锁系统 - 可视化架构文档</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 40px;
+        }
+
+        h1 {
+            color: #667eea;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 40px;
+            font-size: 1.2em;
+        }
+
+        h2 {
+            color: #764ba2;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+            font-size: 1.8em;
+        }
+
+        h3 {
+            color: #555;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+
+        .diagram-container {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .mermaid {
+            text-align: center;
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+        }
+
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        .warning-box {
+            background: #fff3e0;
+            border-left: 4px solid #ff9800;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        .success-box {
+            background: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        .toc {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+
+        .toc ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .toc li {
+            margin: 10px 0;
+        }
+
+        .toc a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .toc a:hover {
+            text-decoration: underline;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .feature-card {
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            border-color: #667eea;
+        }
+
+        .feature-card h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        code {
+            background: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin: 20px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔒 分布式锁系统</h1>
+        <p class="subtitle">可视化架构文档 - 完整系统设计概览</p>
+
+        <div class="toc">
+            <h3>📑 目录</h3>
+            <ul>
+                <li><a href="#overview">1. 系统概览</a></li>
+                <li><a href="#architecture">2. 架构设计</a></li>
+                <li><a href="#components">3. 核心组件</a></li>
+                <li><a href="#flow">4. 关键流程</a></li>
+                <li><a href="#lock-design">5. 锁设计</a></li>
+                <li><a href="#features">6. 特性说明</a></li>
+            </ul>
+        </div>
+
+        <section id="overview">
+            <h2>1. 系统概览</h2>
+            
+            <div class="info-box">
+                <strong>系统目标：</strong>管理镜像层下载的分布式锁系统，确保同一镜像层在同一时刻只有一个节点能够下载。
+            </div>
+
+            <div class="diagram-container">
+                <h3>整体架构图</h3>
+                <div class="mermaid">
+graph TB
+    subgraph Content["📦 Content 插件层"]
+        Writer[Writer<br/>业务逻辑处理]
+        RefCountMgr[RefCountManager<br/>引用计数管理]
+        RefCountStorage[RefCountStorage<br/>本地存储]
+    end
+
+    subgraph Client["🌐 Client 包"]
+        LockClient[LockClient<br/>HTTP客户端<br/>ShortClient/LongClient]
+    end
+
+    subgraph Server["🖥️ Server 端"]
+        Handler[Handler<br/>HTTP接口]
+        LockManager[LockManager<br/>锁管理器<br/>32个分段锁]
+        Shard[resourceShard<br/>物理锁+状态+队列]
+    end
+
+    Writer -->|1. 判断是否执行| RefCountMgr
+    RefCountMgr -->|2. 读取计数| RefCountStorage
+    Writer -->|3. 请求锁| LockClient
+    LockClient -->|4. POST /lock| Handler
+    Handler -->|5. TryLock| LockManager
+    LockManager -->|6. 管理| Shard
+                </div>
+            </div>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>🔐 分布式锁</h4>
+                    <p>确保同一资源同一时刻只有一个节点操作</p>
+                </div>
+                <div class="feature-card">
+                    <h4>📊 分段锁</h4>
+                    <p>32个分段，提升并发性能</p>
+                </div>
+                <div class="feature-card">
+                    <h4>🔒 物理锁</h4>
+                    <p>每个资源独立的互斥锁</p>
+                </div>
+                <div class="feature-card">
+                    <h4>📈 引用计数</h4>
+                    <p>客户端判断是否执行操作</p>
+                </div>
+                <div class="feature-card">
+                    <h4>🔄 等待队列</h4>
+                    <p>FIFO队列管理锁请求</p>
+                </div>
+                <div class="feature-card">
+                    <h4>📡 SSE订阅</h4>
+                    <p>实时通知锁状态变化</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="architecture">
+            <h2>2. 架构设计</h2>
+
+            <div class="diagram-container">
+                <h3>三层架构</h3>
+                <div class="mermaid">
+graph LR
+    subgraph Layer1["应用层"]
+        A1[Content插件]
+        A2[业务逻辑]
+    end
+
+    subgraph Layer2["客户端层"]
+        B1[LockClient]
+        B2[HTTP请求]
+        B3[SSE订阅]
+    end
+
+    subgraph Layer3["服务端层"]
+        C1[Handler]
+        C2[LockManager]
+        C3[resourceShard]
+    end
+
+    A1 --> B1
+    A2 --> B1
+    B1 --> B2
+    B1 --> B3
+    B2 --> C1
+    B3 --> C1
+    C1 --> C2
+    C2 --> C3
+                </div>
+            </div>
+        </section>
+
+        <section id="components">
+            <h2>3. 核心组件</h2>
+
+            <div class="diagram-container">
+                <h3>LockManager 结构</h3>
+                <div class="mermaid">
+classDiagram
+    class LockManager {
+        -shards: [32]*resourceShard
+        -AllowMultiNodeDownload: bool
+        +TryLock(request) bool, bool, string
+        +Unlock(request) bool
+        +getShard(resourceID) *resourceShard
+    }
+
+    class resourceShard {
+        -mu: sync.RWMutex
+        -resourceLocks: map[string]*sync.Mutex
+        -locks: map[string]*LockInfo
+        -queues: map[string][]*LockRequest
+        -subscribers: map[string][]Subscriber
+    }
+
+    class LockInfo {
+        +Request: *LockRequest
+        +AcquiredAt: time.Time
+        +Completed: bool
+        +Success: bool
+    }
+
+    LockManager "1" --> "32" resourceShard
+    resourceShard "1" --> "*" LockInfo
+                </div>
+            </div>
+
+            <div class="diagram-container">
+                <h3>Client 结构</h3>
+                <div class="mermaid">
+classDiagram
+    class LockClient {
+        -ServerURL: string
+        -ShortClient: *http.Client
+        -LongClient: *http.Client
+        -NodeID: string
+        +Lock(ctx, request) *LockResult, error
+        +Unlock(ctx, request) error
+        -tryLockOnce() *LockResult, error
+        -waitForLock() *LockResult, error
+    }
+
+    class LockResult {
+        +Acquired: bool
+        +Error: error
+    }
+
+    LockClient --> LockResult
+                </div>
+            </div>
+
+            <div class="diagram-container">
+                <h3>Callback 包结构</h3>
+                <div class="mermaid">
+classDiagram
+    class RefCountManager {
+        -storage: RefCountStorage
+        +ShouldSkipOperation() bool, string
+        +UpdateRefCount()
+        +GetRefCount() *ReferenceCount
+    }
+
+    class RefCountStorage {
+        <<interface>>
+        +GetRefCount() *ReferenceCount
+        +SetRefCount()
+        +DeleteRefCount()
+    }
+
+    class ReferenceCount {
+        +Count: int
+        +Nodes: map[string]bool
+    }
+
+    RefCountManager --> RefCountStorage
+    RefCountStorage --> ReferenceCount
+                </div>
+            </div>
+        </section>
+
+        <section id="flow">
+            <h2>4. 关键流程</h2>
+
+            <div class="diagram-container">
+                <h3>Pull 操作完整流程</h3>
+                <div class="mermaid">
+sequenceDiagram
+    participant W as Writer
+    participant R as RefCountManager
+    participant C as LockClient
+    participant S as LockManager
+    participant Sh as resourceShard
+
+    W->>R: ShouldSkipOperation()
+    R->>R: GetRefCount()
+    alt refCount > 0
+        R-->>W: skip=true
+        W-->>W: 跳过操作
+    else refCount == 0
+        R-->>W: skip=false
+        W->>C: Lock(request)
+        C->>S: POST /lock
+        S->>Sh: getShard(resourceID)
+        S->>Sh: 获取分段锁
+        S->>Sh: 检查/创建资源锁
+        S->>Sh: 获取资源锁(物理锁)
+        alt 锁不存在
+            S->>Sh: 创建LockInfo
+            S-->>C: acquired=true
+        else 锁被占用
+            alt AllowMultiNodeDownload=false
+                S-->>C: acquired=false, error
+            else AllowMultiNodeDownload=true
+                S->>Sh: 加入等待队列
+                S-->>C: acquired=false
+                C->>C: waitForLock (SSE)
+            end
+        end
+        C-->>W: LockResult
+        W->>W: 执行Pull操作
+        W->>C: Unlock(request)
+        C->>S: POST /unlock
+        S->>Sh: 释放资源锁
+        alt 操作成功
+            S->>Sh: 删除锁和资源锁
+        else 操作失败
+            S->>Sh: 保留资源锁
+            S->>Sh: processQueue
+        end
+        W->>R: UpdateRefCount()
+        R->>R: refCount.Count++
+    end
+                </div>
+            </div>
+
+            <div class="diagram-container">
+                <h3>分段锁并发处理</h3>
+                <div class="mermaid">
+sequenceDiagram
+    participant A as 节点A<br/>resource1
+    participant B as 节点B<br/>resource2
+    participant C as 节点C<br/>resource1
+    participant S1 as 分段1
+    participant S2 as 分段2
+
+    par 不同分段并发
+        A->>S1: TryLock(resource1)
+        S1->>S1: 获取分段锁
+        S1-->>A: acquired=true
+    and
+        B->>S2: TryLock(resource2)
+        S2->>S2: 获取分段锁
+        S2-->>B: acquired=true
+    end
+
+    Note over A,B: 不同分段可以并发执行
+
+    C->>S1: TryLock(resource1)
+    S1->>S1: 检查locks map
+    S1-->>C: acquired=false (锁被占用)
+    S1->>S1: 加入等待队列
+                </div>
+            </div>
+
+            <div class="diagram-container">
+                <h3>物理锁获取顺序</h3>
+                <div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant L as LockManager
+    participant S as resourceShard
+
+    C->>L: TryLock(request)
+    L->>S: getShard(resourceID)
+    
+    Note over S: 阶段1: 获取分段锁，检查/创建资源锁
+    L->>S: shard.mu.Lock()
+    alt 资源锁存在
+        L->>S: 获取resourceLock引用
+    else 资源锁不存在
+        L->>S: 创建resourceLock
+    end
+    L->>S: shard.mu.Unlock()
+    
+    Note over S: 阶段2: 获取资源锁(物理锁)
+    L->>S: resourceLock.Lock()
+    
+    Note over S: 阶段3: 重新获取分段锁访问locks map
+    L->>S: shard.mu.RLock()
+    L->>S: 检查locks[key]
+    L->>S: shard.mu.RUnlock()
+    
+    Note over S: 阶段4: 根据检查结果处理
+    alt 锁不存在
+        L->>S: 创建LockInfo
+    end
+    
+    L->>S: resourceLock.Unlock()
+    L-->>C: 返回结果
+                </div>
+            </div>
+        </section>
+
+        <section id="lock-design">
+            <h2>5. 锁设计</h2>
+
+            <div class="diagram-container">
+                <h3>分段锁结构</h3>
+                <div class="mermaid">
+graph TB
+    subgraph LM["LockManager"]
+        Shards[32个resourceShard]
+    end
+
+    subgraph Shard["resourceShard (单个分段)"]
+        SL[分段锁<br/>sync.RWMutex]
+        RL[resourceLocks<br/>物理锁map]
+        L[locks<br/>锁状态map]
+        Q[queues<br/>等待队列map]
+        Sub[subscribers<br/>SSE订阅者map]
+    end
+
+    Shards --> Shard
+    Shard --> SL
+    Shard --> RL
+    Shard --> L
+    Shard --> Q
+    Shard --> Sub
+                </div>
+            </div>
+
+            <div class="diagram-container">
+                <h3>分段锁哈希分布</h3>
+                <div class="mermaid">
+graph LR
+    R1[resource1] -->|FNV-1a| S1[分段1]
+    R2[resource2] -->|FNV-1a| S2[分段2]
+    R3[resource3] -->|FNV-1a| S3[分段3]
+    RN[resourceN] -->|FNV-1a| S32[分段32]
+    
+    S1 --> C1[并发处理]
+    S2 --> C2[并发处理]
+    S3 --> C3[并发处理]
+    S32 --> C32[并发处理]
+                </div>
+            </div>
+
+            <div class="success-box">
+                <strong>✅ 分段锁优势：</strong>
+                <ul>
+                    <li>32个分段，理论上支持32个不同资源的并发操作</li>
+                    <li>使用 FNV-1a 哈希算法，确保同一 resourceID 的所有操作类型分到同一分段</li>
+                    <li>分段锁使用 RWMutex，读操作可以并发</li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="features">
+            <h2>6. 特性说明</h2>
+
+            <h3>6.1 多节点下载模式</h3>
+            <div class="diagram-container">
+                <div class="mermaid">
+stateDiagram-v2
+    [*] --> 检查配置: TryLock请求
+    检查配置 --> 多节点模式开启: AllowMultiNodeDownload=true
+    检查配置 --> 多节点模式关闭: AllowMultiNodeDownload=false
+    
+    多节点模式开启 --> 锁被占用: 检查锁状态
+    锁被占用 --> 加入队列: 加入等待队列
+    加入队列 --> SSE订阅: 等待锁释放
+    
+    多节点模式关闭 --> 锁被占用: 检查锁状态
+    锁被占用 --> 直接返回失败: 不加入队列
+    
+    多节点模式开启 --> 锁可用: 检查锁状态
+    多节点模式关闭 --> 锁可用: 检查锁状态
+    锁可用 --> 获取锁成功: 创建LockInfo
+                </div>
+            </div>
+
+            <div class="info-box">
+                <strong>配置方式：</strong>通过环境变量 <code>ALLOW_MULTI_NODE_DOWNLOAD</code> 控制
+                <ul>
+                    <li><code>true</code> (默认): 允许多节点下载，锁被占用时加入等待队列</li>
+                    <li><code>false</code>: 禁止多节点下载，锁被占用时直接返回失败</li>
+                </ul>
+            </div>
+
+            <h3>6.2 引用计数管理</h3>
+            <div class="diagram-container">
+                <div class="mermaid">
+stateDiagram-v2
+    [*] --> Pull操作: 操作成功
+    [*] --> Update操作: 操作成功
+    [*] --> Delete操作: 操作成功
+    
+    Pull操作 --> 引用计数加1: refCount.Count++
+    Update操作 --> 引用计数不变: 不改变
+    Delete操作 --> 删除引用计数: DeleteRefCount
+    
+    Pull操作 --> 操作失败: 操作失败
+    Update操作 --> 操作失败: 操作失败
+    Delete操作 --> 操作失败: 操作失败
+    操作失败 --> 引用计数不变: 不更新
+                </div>
+            </div>
+
+            <div class="info-box">
+                <strong>引用计数规则：</strong>
+                <ul>
+                    <li><strong>Pull操作成功：</strong>引用计数+1</li>
+                    <li><strong>Update操作：</strong>不改变引用计数</li>
+                    <li><strong>Delete操作成功：</strong>删除引用计数</li>
+                    <li><strong>操作失败：</strong>不更新引用计数</li>
+                </ul>
+            </div>
+
+            <h3>6.3 数据流</h3>
+            <div class="diagram-container">
+                <div class="mermaid">
+flowchart TD
+    Start([节点请求Pull资源]) --> CheckRefCount{检查引用计数}
+    CheckRefCount -->|refCount > 0| Skip[跳过操作]
+    CheckRefCount -->|refCount == 0| TryLock[请求锁]
+    
+    TryLock --> GetShard[getShard]
+    GetShard --> ShardLock[获取分段锁]
+    ShardLock --> CheckResourceLock{资源锁存在?}
+    
+    CheckResourceLock -->|不存在| CreateRL[创建资源锁]
+    CheckResourceLock -->|存在| GetRL[获取资源锁引用]
+    
+    CreateRL --> ReleaseSL[释放分段锁]
+    GetRL --> ReleaseSL
+    ReleaseSL --> AcquireRL[获取资源锁]
+    
+    AcquireRL --> ReacquireSL[重新获取分段锁]
+    ReacquireSL --> CheckLockInfo{检查locks map}
+    
+    CheckLockInfo -->|锁不存在| CreateLI[创建LockInfo]
+    CheckLockInfo -->|锁被占用| CheckMultiNode{多节点下载?}
+    
+    CheckMultiNode -->|关闭| ReturnFail[返回失败]
+    CheckMultiNode -->|开启| AddToQueue[加入队列]
+    AddToQueue --> WaitLock[SSE订阅等待]
+    
+    CreateLI --> ExecuteOp[执行Pull操作]
+    WaitLock -->|锁被分配| ExecuteOp
+    
+    ExecuteOp --> UpdateRefCount[更新引用计数]
+    UpdateRefCount --> Unlock[释放锁]
+    
+    Unlock --> CheckSuccess{操作成功?}
+    CheckSuccess -->|成功| DeleteLock[删除锁和资源锁]
+    CheckSuccess -->|失败| KeepRL[保留资源锁]
+    
+    DeleteLock --> End([完成])
+    KeepRL --> End
+    Skip --> End
+    ReturnFail --> End
+                </div>
+            </div>
+        </section>
+
+        <div class="warning-box">
+            <strong>📝 说明：</strong>
+            <p>本文档使用 Mermaid 图表，可以在支持 Mermaid 的环境中直接可视化。如果图表无法显示，请确保：</p>
+            <ul>
+                <li>使用支持 Mermaid 的 Markdown 查看器（如 GitHub、VS Code）</li>
+                <li>或在浏览器中打开此 HTML 文件</li>
+                <li>或访问 <a href="https://mermaid.live/" target="_blank">Mermaid Live Editor</a> 查看</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        mermaid.initialize({ 
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            },
+            sequence: {
+                diagramMarginX: 50,
+                diagramMarginY: 10,
+                actorMargin: 50,
+                width: 150,
+                height: 65,
+                boxMargin: 10,
+                boxTextMargin: 5,
+                noteMargin: 10,
+                messageMargin: 35
+            }
+        });
+    </script>
+</body>
+</html>
+
