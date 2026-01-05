@@ -18,64 +18,65 @@
 
 ```mermaid
 flowchart TD
-    Start([节点请求锁]) --> ParseKey[生成key<br/>key = lockType:resourceID]
-    
-    ParseKey --> GetShard[getShard<br/>根据resourceID获取分段]
-    GetShard --> AcquireShardLock[获取分段锁]
-    AcquireShardLock --> CheckResourceLock{资源锁存在?}
-    
-    CheckResourceLock -->|不存在| CreateResourceLock[创建资源锁]
-    CheckResourceLock -->|存在| GetResourceLock[获取资源锁引用]
-    
-    CreateResourceLock --> ReleaseShardLock1[释放分段锁]
+    Start([节点请求锁]) --> ParseKey["生成key<br/>key = lockType:resourceID"]
+
+    ParseKey --> GetShard["getShard<br/>根据resourceID获取分段"]
+    GetShard --> AcquireShardLock["获取分段锁"]
+    AcquireShardLock --> CheckResourceLock{"资源锁存在?"}
+
+    CheckResourceLock -->|不存在| CreateResourceLock["创建资源锁"]
+    CheckResourceLock -->|存在| GetResourceLock["获取资源锁引用"]
+
+    CreateResourceLock --> ReleaseShardLock1["释放分段锁"]
     GetResourceLock --> ReleaseShardLock1
-    ReleaseShardLock1 --> AcquireResourceLock[获取资源锁物理锁]
-    
-    AcquireResourceLock --> ReacquireShardLock[重新获取分段锁读锁]
-    ReacquireShardLock --> CheckLockInfo{检查locks[key]}
-    
-    CheckLockInfo -->|锁不存在| CreateLockInfo[创建LockInfo<br/>获取锁成功]
-    CheckLockInfo -->|锁被占用| CheckSameNode{同一节点?}
-    
-    CheckSameNode -->|是| UpdateLockInfo[更新LockInfo<br/>获取锁成功]
-    CheckSameNode -->|否| CheckMultiNode{多节点下载<br/>模式开启?}
-    
-    CheckMultiNode -->|关闭| ReturnFail[返回失败<br/>不加入队列]
-    CheckMultiNode -->|开启| AddToQueue[addToQueue<br/>加入对应操作类型的队列]
-    
-    AddToQueue --> QueueKey[根据key查找队列<br/>key = lockType:resourceID]
-    QueueKey --> CheckQueueExists{队列存在?}
-    
-    CheckQueueExists -->|不存在| CreateQueue[创建新队列<br/>queues[key] = []]
-    CheckQueueExists -->|存在| AppendQueue[追加到队列尾部<br/>queues[key].append]
-    
+    ReleaseShardLock1 --> AcquireResourceLock["获取资源锁物理锁"]
+
+    AcquireResourceLock --> ReacquireShardLock["重新获取分段锁读锁"]
+    ReacquireShardLock --> CheckLockInfo{"检查 locks[key]"} 
+    ReacquireShardLock --> CheckLockInfo
+
+    CheckLockInfo -->|锁不存在| CreateLockInfo["创建LockInfo<br/>获取锁成功"]
+    CheckLockInfo -->|锁被占用| CheckSameNode{"同一节点?"}
+
+    CheckSameNode -->|是| UpdateLockInfo["更新LockInfo<br/>获取锁成功"]
+    CheckSameNode -->|否| CheckMultiNode{"多节点下载<br/>模式开启?"}
+
+    CheckMultiNode -->|关闭| ReturnFail["返回失败<br/>不加入队列"]
+    CheckMultiNode -->|开启| AddToQueue["addToQueue<br/>加入对应操作类型的队列"]
+
+    AddToQueue --> QueueKey["根据key查找队列<br/>key = lockType:resourceID"]
+    QueueKey --> CheckQueueExists{"队列存在?"}
+
+    CheckQueueExists -->|不存在| CreateQueue["创建新队列<br/>queues[key] = []"]
+    CheckQueueExists -->|存在| AppendQueue["追加到队列尾部<br/>queues[key].append"]
+
     CreateQueue --> AppendQueue
-    AppendQueue --> ReturnWaiting[返回等待<br/>acquired=false]
-    
-    CreateLockInfo --> ExecuteOp[执行操作]
+    AppendQueue --> ReturnWaiting["返回等待<br/>acquired=false"]
+
+    CreateLockInfo --> ExecuteOp["执行操作"]
     UpdateLockInfo --> ExecuteOp
-    ReturnWaiting --> SSE[SSE订阅等待]
-    
-    ExecuteOp --> CheckSuccess{操作成功?}
-    
-    CheckSuccess -->|成功| DeleteLock[删除锁和资源锁<br/>不处理队列]
-    CheckSuccess -->|失败| ProcessQueue[processQueue<br/>处理相同操作类型的队列]
-    
-    ProcessQueue --> GetQueueByKey[根据key获取队列<br/>key = lockType:resourceID]
-    GetQueueByKey --> CheckQueueEmpty{队列为空?}
-    
-    CheckQueueEmpty -->|是| NoNextNode[无下一个节点]
-    CheckQueueEmpty -->|否| GetFirstNode[FIFO: 取出队头节点]
-    
-    GetFirstNode --> RemoveFromQueue[从队列中移除<br/>queue = queue[1:]]
-    RemoveFromQueue --> CreateLockForNext[为下一个节点创建LockInfo]
-    CreateLockForNext --> NotifyNext[SSE通知队头节点]
-    
+    ReturnWaiting --> SSE["SSE订阅等待"]
+
+    ExecuteOp --> CheckSuccess{"操作成功?"}
+
+    CheckSuccess -->|成功| DeleteLock["删除锁和资源锁<br/>不处理队列"]
+    CheckSuccess -->|失败| ProcessQueue["processQueue<br/>处理相同操作类型的队列"]
+
+    ProcessQueue --> GetQueueByKey["根据key获取队列<br/>key = lockType:resourceID"]
+    GetQueueByKey --> CheckQueueEmpty{"队列为空?"}
+
+    CheckQueueEmpty -->|是| NoNextNode["无下一个节点"]
+    CheckQueueEmpty -->|否| GetFirstNode["FIFO: 取出队头节点"]
+
+    GetFirstNode --> RemoveFromQueue["从队列中移除<br/>queue = queue[1:]"]
+    RemoveFromQueue --> CreateLockForNext["为下一个节点创建LockInfo"]
+    CreateLockForNext --> NotifyNext["SSE通知队头节点"]
+
     DeleteLock --> End([完成])
     NoNextNode --> End
     NotifyNext --> End
     ReturnFail --> End
-    SSE -->|收到事件| Recheck[重新检查锁状态]
+    SSE -->|收到事件| Recheck["重新检查锁状态"]
     Recheck --> Start
 ```
 
@@ -86,7 +87,7 @@ flowchart TD
 ```mermaid
 graph TB
     subgraph Shard["resourceShard (分段)"]
-        Queues[queues: map[string][]*LockRequest]
+        Queues["queues: map[string][]*LockRequest"]
     end
     
     subgraph QueuePull["pull:resource123 队列"]
@@ -378,4 +379,6 @@ T4: 节点B收到SSE事件 → 检查资源 → 资源存在 → 跳过操作
 - ⚠️ 操作成功时，不处理队列（资源已存在）
 - ⚠️ 操作失败时，只处理相同操作类型的队列
 - ⚠️ 队列中的节点通过SSE收到事件后，会重新检查资源
+
+
 
