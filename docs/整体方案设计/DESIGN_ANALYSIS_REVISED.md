@@ -197,23 +197,23 @@ graph LR
 ```mermaid
 graph TB
     subgraph Config["配置（所有节点共享）"]
-        CN[节点列表<br/>node1, node2, ..., node8]
+        CN["节点列表\nnode1, node2, ..., node8"]
     end
     
     subgraph Nodes["8个节点（容器）"]
-        N1[节点1<br/>计算: hash(resourceID) % 8]
-        N2[节点2]
-        N3[节点3]
-        N4[节点4]
-        N5[节点5]
-        N6[节点6]
-        N7[节点7]
-        N8[节点8]
+        N1["节点1\n计算: hash(resourceID) % 8"]
+        N2["节点2"]
+        N3["节点3"]
+        N4["节点4"]
+        N5["节点5"]
+        N6["节点6"]
+        N7["节点7"]
+        N8["节点8"]
     end
     
-    N1 -->|本地计算| Check{是否分配给<br/>当前节点?}
-    Check -->|是| Handle[处理资源]
-    Check -->|否| Skip[跳过]
+    N1 -->|本地计算| Check{"是否分配给\n当前节点?"}
+    Check -->|是| Handle["处理资源"]
+    Check -->|否| Skip["跳过"]
     
     style Check fill:#4ecdc4
     style Handle fill:#4ecdc4
@@ -804,4 +804,5 @@ flowchart TD
 > **简单可靠 > 复杂高性能**
 
 对于8个节点的容器环境，简单可靠的方案（方案A）是最佳选择。
+
 
